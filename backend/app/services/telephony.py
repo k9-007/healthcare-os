@@ -44,7 +44,11 @@ def place_call(call: CallLog, patient_phone: str) -> None:
     try:
         from twilio.rest import Client
 
-        client = Client(s.twilio_account_sid, s.twilio_auth_token)
+        # Prefer API key auth (SK... + secret) when provided, else classic auth token.
+        if s.twilio_api_key_sid and s.twilio_api_key_secret:
+            client = Client(s.twilio_api_key_sid, s.twilio_api_key_secret, s.twilio_account_sid)
+        else:
+            client = Client(s.twilio_account_sid, s.twilio_auth_token)
         kwargs: dict = {"to": patient_phone, "from_": s.twilio_from_number}
         if _public_url_reachable():
             kwargs["url"] = f"{s.public_base_url}/twilio/voice/{call.id}"

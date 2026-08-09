@@ -13,8 +13,10 @@ class Settings(BaseSettings):
 
     # Telephony
     telephony_mode: str = "simulation"  # "twilio" | "simulation"
-    twilio_account_sid: str = ""
-    twilio_auth_token: str = ""
+    twilio_account_sid: str = ""  # AC... (required for real calls)
+    twilio_auth_token: str = ""  # classic auth token (alternative to API key)
+    twilio_api_key_sid: str = ""  # SK... (API key auth)
+    twilio_api_key_secret: str = ""  # API key secret
     twilio_from_number: str = ""
     public_base_url: str = "http://localhost:8000"
 
@@ -55,8 +57,15 @@ class Settings(BaseSettings):
         return self.data_path / "recordings"
 
     @property
+    def twilio_has_auth(self) -> bool:
+        """Either classic auth token, or an API key SID + secret pair."""
+        return bool(self.twilio_auth_token) or bool(
+            self.twilio_api_key_sid and self.twilio_api_key_secret
+        )
+
+    @property
     def twilio_configured(self) -> bool:
-        return bool(self.twilio_account_sid and self.twilio_auth_token and self.twilio_from_number)
+        return bool(self.twilio_account_sid and self.twilio_from_number and self.twilio_has_auth)
 
     @property
     def sarvam_configured(self) -> bool:

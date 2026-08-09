@@ -117,6 +117,7 @@ export interface HospitalDoc {
   status: 'pending' | 'extracting' | 'ready' | 'failed'
   uploadedAt: string
   excerpt?: string
+  patientId: number | null // null = general / hospital-wide
 }
 
 export interface Citation {
@@ -133,6 +134,8 @@ export interface BrainAnswer {
   citations: Citation[]
   confidence: number // 0..1
   answeredAt: string
+  patientId?: number | null // scoped to a patient (their docs + general docs)
+  patientName?: string
 }
 
 export interface AnalyticsSummary {

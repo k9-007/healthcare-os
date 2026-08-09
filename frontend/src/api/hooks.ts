@@ -93,15 +93,23 @@ export function useAckEscalation() {
 export function useUploadDocument() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (file: File) => api.uploadDocument(file),
+    mutationFn: ({ file, patientId }: { file: File; patientId?: number | null }) =>
+      api.uploadDocument(file, patientId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['documents'] }),
   })
+}
+
+export interface AskBrainInput {
+  question: string
+  patientId?: number | null
+  patientName?: string
 }
 
 export function useAskBrain() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (question: string) => api.askBrain(question),
+    mutationFn: ({ question, patientId, patientName }: AskBrainInput) =>
+      api.askBrain(question, patientId, patientName),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['brain-history'] }),
   })
 }

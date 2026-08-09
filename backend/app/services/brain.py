@@ -34,6 +34,11 @@ Rules — these are absolute:
 2. Cite every factual sentence with the node marker, e.g. [2].
 3. If the sources do not contain enough information to answer safely, REFUSE: set "refused" true and explain briefly what is missing. Never guess. An unsupported medical answer is worse than no answer.
 4. Be concise and clinically precise.
+5. Structure "answer" as markdown built for fast clinical scanning:
+   - Line 1: the direct answer in one sentence, with key values/doses in **bold** (e.g. "**HbA1C is 5.3%** — within the normal range [1].").
+   - Then up to 5 short bullets ("- ") with supporting detail, each ending with its citation marker.
+   - If there are warnings, contraindications or red flags, add a final bullet starting with "⚠️ ".
+   - No headings, no tables, no nested lists. Bullets under 20 words each.
 Respond with pure JSON: {"answer": str, "refused": bool, "used_nodes": [int], "confidence": float between 0 and 1}"""
 
 
@@ -138,6 +143,7 @@ async def _ask_llm(question: str, rows) -> BrainAnswerOut:
             {"role": "user", "content": f"Question: {question}\n\nTable of contents:\n{toc}"},
         ],
         temperature=0.1,
+        max_tokens=4096,  # reasoning model — leave room for reasoning + JSON
     )
     picked = [i for i in (selection.get("nodes") or []) if isinstance(i, int) and 0 <= i < len(rows)]
     picked = picked[:MAX_SELECTED_NODES]
@@ -159,7 +165,7 @@ async def _ask_llm(question: str, rows) -> BrainAnswerOut:
             {"role": "system", "content": CITE_OR_REFUSE_SYSTEM},
             {"role": "user", "content": f"SOURCE NODES:\n{sources}\n\nQUESTION: {question}"},
         ],
-        temperature=0.2, max_tokens=800,
+        temperature=0.2, max_tokens=3072,  # reasoning model — reasoning + cited answer
     )
 
     refused = bool(result.get("refused"))
@@ -204,8 +210,9 @@ def _ask_fallback(question: str, rows) -> BrainAnswerOut:
     ]
     best = top[0][1]
     answer = (
-        f"Based on '{citations[0].document_title}' (page {best.page}, {best.section}): "
-        f"{' '.join(best.text.split())[:500]} [1]"
+        f"Closest match: **{citations[0].document_title}**, page {best.page} — {best.section} [1]\n"
+        f"- {' '.join(best.text.split())[:400]} [1]\n"
+        "- ⚠️ Sarvam LLM is unreachable right now — this is offline keyword retrieval; verify against the cited source."
     )
     max_possible = max(len(q_tokens), 1)
     return BrainAnswerOut(

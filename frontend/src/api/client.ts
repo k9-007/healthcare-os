@@ -105,6 +105,7 @@ interface BeScheduledCall {
 interface BeDocument {
   id: number; title: string; type: HospitalDoc['type']; status: HospitalDoc['status']
   created_at: string; pages: number; size_kb: number; excerpt: string
+  patient_id: number | null
 }
 
 interface BeAnalytics {
@@ -387,42 +388,28 @@ export const api = {
 
   async listDocuments(): Promise<HospitalDoc[]> {
     const rows = await get<BeDocument[]>('/documents')
-    return rows.map((d) => ({
-      id: d.id,
-      title: d.title,
-      type: d.type,
-      pages: d.pages,
-      sizeKb: d.size_kb,
-      status: d.status,
-      uploadedAt: utc(d.created_at),
-      excerpt: d.excerpt || undefined,
-    }))
+    return rows.map(mapDocument)
   },
 
-  async uploadDocument(file: File): Promise<HospitalDoc> {
+  async uploadDocument(file: File, patientId?: number | null): Promise<HospitalDoc> {
     const form = new FormData()
     form.append('file', file)
     form.append('title', file.name.replace(/\.[^.]+$/, ''))
-    form.append('type', 'guideline')
+    form.append('type', patientId != null ? 'discharge' : 'guideline')
+    if (patientId != null) form.append('patient_id', String(patientId))
     const d = await request<BeDocument>('/documents', { method: 'POST', body: form })
-    return {
-      id: d.id,
-      title: d.title,
-      type: d.type,
-      pages: d.pages,
-      sizeKb: d.size_kb,
-      status: d.status,
-      uploadedAt: utc(d.created_at),
-      excerpt: d.excerpt || undefined,
-    }
+    return mapDocument(d)
   },
 
   async getBrainHistory(): Promise<BrainAnswer[]> {
     return [...brainHistory]
   },
 
-  async askBrain(question: string): Promise<BrainAnswer> {
-    const res = await send<BeBrainAnswer>('/brain/ask', 'POST', { question })
+  async askBrain(question: string, patientId?: number | null, patientName?: string): Promise<BrainAnswer> {
+    const res = await send<BeBrainAnswer>('/brain/ask', 'POST', {
+      question,
+      patient_id: patientId ?? null,
+    })
     const answer: BrainAnswer = {
       id: ++brainId,
       question,
@@ -435,8 +422,24 @@ export const api = {
       })),
       confidence: res.confidence,
       answeredAt: new Date().toISOString(),
+      patientId: patientId ?? null,
+      patientName,
     }
     brainHistory.push(answer)
     return answer
   },
+}
+
+function mapDocument(d: BeDocument): HospitalDoc {
+  return {
+    id: d.id,
+    title: d.title,
+    type: d.type,
+    pages: d.pages,
+    sizeKb: d.size_kb,
+    status: d.status,
+    uploadedAt: utc(d.created_at),
+    excerpt: d.excerpt || undefined,
+    patientId: d.patient_id,
+  }
 }

@@ -61,7 +61,7 @@ export interface CallLog {
   id: number
   patientId: number
   direction: 'outbound' | 'inbound'
-  mode: 'twilio' | 'simulation'
+  mode: 'plivo' | 'simulation'
   status: 'queued' | 'ringing' | 'in-progress' | 'completed' | 'failed'
   kind: 'medicine' | 'followup' | 'callback'
   placedAt: string

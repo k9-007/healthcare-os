@@ -66,7 +66,7 @@ Brain: `POST /brain/ask` → `{answer, refused, citations[{doc,page,section,snip
 Calls: `POST /patients/{id}/call`, `GET /calls/{id}`, `GET /patients/{id}/calls`, `POST /calls/{id}/simulate-reply` (audio **or** text), `POST /patients/{id}/reply` (closed-loop callback, auto-acks open escalations)
 Schedule: `GET /schedule/upcoming`, `GET /patients/{id}/schedule`, `POST /patients/{id}/schedule/rematerialize`, `POST /schedule/run-now`, `POST /schedule/{id}/simulate`, `PATCH /schedule/{id}` (snooze/skip/reschedule)
 Analytics: `GET /analytics/summary` (adherence %, missed doses, at-risk, escalations, follow-up completion, call success, 7-day trend), `GET/PATCH /escalations`
-Twilio: `POST /twilio/voice/{id}` (TwiML), `POST /twilio/recording/{id}`, `POST /twilio/status/{id}`
+Plivo: `POST /plivo/voice/{id}` (answer XML), `POST /plivo/recording/{id}`, `POST /plivo/hangup/{id}`
 Meta: `GET /health`, Swagger at `/docs`
 
 ## Verified end-to-end (actual test run, 2026-08-09)
@@ -91,16 +91,16 @@ Meta: `GET /health`, Swagger at `/docs`
 - **Retries** → per-plan `max_retries` + `retry_backoff` csv; exhausted medicine slots → `skipped` + `missed_dose` event + adherence drop. Grace window (`window_minutes`) expires stale dose slots instead of calling at 3am the next day.
 - **Call window** → out-of-window slots defer to next window open, never dial.
 - **Uploads** → extension whitelist, size caps (25 MB docs / 20 MB audio), empty-file rejection, sanitized stored filenames. Vision failures mark the doc `failed` with a hint to re-upload as md/txt (plan §12 fallback).
-- **Twilio webhooks** → always return valid TwiML even on internal errors; recording download failures logged, never 500 back at Twilio; `<Say>` fallback when TTS audio is missing.
+- **Plivo webhooks** → always return valid XML even on internal errors; recording download failures logged, never 500 back at Plivo; `<Speak>` fallback when TTS audio is missing.
 - **Concurrency** → scheduler tick serialized with a lock + `max_instances=1`; SQLite in WAL mode with busy timeout; one bad slot can't kill a tick (per-slot try/except).
 - **Double reply** on an already-completed call → 409. Unknown patient/doc/call → 404 everywhere.
 
 ## Known gaps / next steps
 
 1. **Top up Sarvam credits** — unblocks live LLM scripts, Hindi/Tamil TTS+Translate, real STT and text-analytics. Code path already verified up to the 402.
-2. **Twilio real calls** — wired and ready: `TELEPHONY_MODE=twilio`, from-number `+17372212163`, demo patient 1 set to test number `+916355351675`. **Paste `TWILIO_ACCOUNT_SID` + `TWILIO_AUTH_TOKEN` into `backend/.env`** (left blank on purpose; until then the backend safely falls back to simulation). Two operating levels:
-   - `PUBLIC_BASE_URL` = localhost (current): real calls placed with **inline TwiML** — the patient's phone rings and hears the localized script (`<Say language="hi-IN">…`), but the reply can't be recorded.
-   - `PUBLIC_BASE_URL` = ngrok/public tunnel: full turn-based IVR — `<Play>` Sarvam TTS + `<Record>` → recording webhook → STT → analytics. Signature validation of Twilio webhooks still recommended before production.
+2. **Plivo real calls** — wired and verified end to end: `TELEPHONY_MODE=plivo`, from-number `+912269983412` (PatientCare+, Mumbai local). Needs `PLIVO_AUTH_ID` + `PLIVO_AUTH_TOKEN` in `backend/.env`; without them the backend falls back to simulation.
+   - `PUBLIC_BASE_URL` **must** be a public https tunnel: Plivo has no inline-XML option, so it fetches both the answer XML and the `<Play>` TTS audio over the internet. `place_call` refuses to dial on a localhost URL instead of burning a call.
+   - Full turn-based IVR: `<Play>` Sarvam TTS + `<Record>` → recording webhook → STT → analytics. Signature validation of Plivo webhooks still recommended before production.
 3. **Vision job pipeline** — implemented defensively (probes both presigned-URL and multipart upload shapes) but not exercised against the live API yet (blocked by credits); md/txt uploads cover the demo meanwhile.
 4. **Long-audio STT job** (`/speech-to-text/job/init`) not wired — current STT covers ≤60s IVR recordings, which is all the flows produce.
 5. No auth on the API (fine for hackathon/demo; add key/JWT before any real deployment).

@@ -177,7 +177,7 @@ const en = {
     stop: 'Stop & analyze',
     micError: 'Microphone unavailable — you can still submit a text-free simulated reply.',
     footNote:
-      'In simulation mode the browser plays the TTS script and your microphone stands in for the patient. In Twilio mode this panel places a real phone call and polls for the recording instead.',
+      'In simulation mode the browser plays the TTS script and your microphone stands in for the patient. In Plivo mode this panel places a real phone call and polls for the recording instead.',
     replyTitle: 'Close the loop — reply to patient',
     replyPlaceholder:
       'e.g. "Take the tablet after dinner and drink more water." — delivered as a voice callback in {{language}}.',
@@ -211,11 +211,11 @@ const en = {
   settings: {
     telephony: 'Telephony',
     telephonyDesc:
-      'Simulation plays TTS in the browser and records your microphone as the patient. Twilio places real PSTN calls — requires account credentials and a public webhook URL.',
+      'Simulation plays TTS in the browser and records your microphone as the patient. Plivo places real PSTN calls — requires account credentials and a public webhook URL.',
     simulation: 'Simulation',
     simulationDesc: 'Safe for demos, no cost',
-    twilio: 'Twilio (real calls)',
-    twilioDesc: 'Needs SID, token & voice number',
+    plivo: 'Plivo (real calls)',
+    plivoDesc: 'Needs auth ID, token & voice number',
     scheduler: 'Scheduler',
     sarvam: 'Sarvam API',
   },

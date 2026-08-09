@@ -17,7 +17,7 @@ import logging
 from pathlib import Path
 
 from ...config import get_settings
-from ..sarvam import DEFAULT_SPEAKER, SarvamUnavailable, sarvam
+from ..sarvam import DEFAULT_SPEAKER, TTS_MODEL, TTS_TEMPERATURE, SarvamUnavailable, sarvam
 from .audio import wav_to_pcm8k
 
 logger = logging.getLogger("voice.prewarm")
@@ -32,8 +32,11 @@ def cache_dir() -> Path:
 
 
 def cache_key(text: str, language: str, speaker: str = DEFAULT_SPEAKER) -> str:
+    # The voice settings are part of the key: changing model or temperature has
+    # to re-render, or a tuning fix silently keeps serving the old audio.
     norm = " ".join(text.split()).lower()
-    return hashlib.sha256(f"{norm}|{language}|{speaker}".encode()).hexdigest()[:24]
+    voice = f"{speaker}|{TTS_MODEL}|{TTS_TEMPERATURE}"
+    return hashlib.sha256(f"{norm}|{language}|{voice}".encode()).hexdigest()[:24]
 
 
 def cached_path(text: str, language: str, speaker: str = DEFAULT_SPEAKER) -> Path:

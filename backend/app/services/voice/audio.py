@@ -66,5 +66,18 @@ def duration_ms(pcm: bytes, sample_rate: int = SAMPLE_RATE) -> int:
     return int(len(pcm) / 2 / sample_rate * 1000)
 
 
+def clip_wav(blob: bytes, max_ms: int) -> bytes:
+    """The first `max_ms` of a WAV clip, re-encoded as 8 kHz mono.
+
+    Sarvam's synchronous STT rejects audio longer than 30 s, so an over-long
+    carrier recording must be cut, not sent whole — the useful speech is at the
+    start, the tail is the silence that failed to end the turn.
+    """
+    pcm = wav_to_pcm8k(blob)
+    if duration_ms(pcm) <= max_ms:
+        return blob
+    return pcm_to_wav(pcm[: max_ms * SAMPLE_RATE * 2 // 1000])
+
+
 def rms(pcm: bytes) -> float:
     return float(audioop.rms(pcm, 2)) if pcm else 0.0

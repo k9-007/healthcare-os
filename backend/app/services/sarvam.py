@@ -24,10 +24,17 @@ from ..config import get_settings
 
 logger = logging.getLogger("sarvam")
 
-# TTS hard limit is ~500 chars per call; keep headroom.
-TTS_CHUNK_CHARS = 450
+# bulbul:v3 accepts 2500 chars per call. Every extra chunk is another request
+# and another audible seam, so keep lines whole with headroom to spare.
+TTS_CHUNK_CHARS = 1500
 # Languages supported by bulbul TTS (subset of the 23 STT/translate languages).
 DEFAULT_SPEAKER = "priya"
+TTS_MODEL = "bulbul:v3"
+# bulbul:v3 is sampled: at its 0.6 default it improvises, and on clinical lines
+# that surfaces as slurred or invented words. Low temperature reads the text.
+TTS_TEMPERATURE = 0.3
+# Slightly under conversational speed — drug names have to survive an 8 kHz line.
+TTS_PACE = 0.95
 
 # sarvam-105b reasons before answering: high quality, tens of seconds.
 REASONING_MODEL = "sarvam-105b"
@@ -48,8 +55,24 @@ class SarvamClient:
     def __init__(self) -> None:
         self.settings = get_settings()
         self.base = self.settings.sarvam_base_url.rstrip("/")
+        self._client: httpx.AsyncClient | None = None
+        self._client_loop: asyncio.AbstractEventLoop | None = None
 
     # ---------- plumbing ----------
+
+    def _http(self) -> httpx.AsyncClient:
+        """One pooled connection per event loop.
+
+        A fresh TLS handshake costs ~0.3 s and the live call path pays for two
+        Sarvam requests per turn (STT + understanding) while the patient waits
+        in silence. Connections are bound to the loop they were opened on, so a
+        new loop (each test script run) gets a new client.
+        """
+        loop = asyncio.get_running_loop()
+        if self._client is None or self._client.is_closed or self._client_loop is not loop:
+            self._client = httpx.AsyncClient(timeout=60.0)
+            self._client_loop = loop
+        return self._client
 
     def _headers(self) -> dict[str, str]:
         if not self.settings.sarvam_configured:
@@ -72,10 +95,10 @@ class SarvamClient:
         last_err: Exception | None = None
         for attempt in range(1, retries + 1):
             try:
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    resp = await client.request(
-                        method, url, headers=headers, json=json_body, data=data, files=files
-                    )
+                resp = await self._http().request(
+                    method, url, headers=headers, json=json_body, data=data, files=files,
+                    timeout=timeout,
+                )
                 if resp.status_code in RETRYABLE_STATUS:
                     raise httpx.HTTPStatusError(
                         f"retryable {resp.status_code}: {resp.text[:200]}",
@@ -203,12 +226,18 @@ class SarvamClient:
         chunks = split_for_tts(text, TTS_CHUNK_CHARS)
         wavs: list[bytes] = []
         for chunk in chunks:
+            # `language_code` is the documented field — the legacy
+            # `target_language_code` alias is accepted but undocumented.
+            # `enable_preprocessing` is a no-op on v3, which is why clinical
+            # shorthand is expanded by `services.spoken` before translation
+            # rather than being left to the API.
             body: dict[str, Any] = {
                 "text": chunk,
-                "target_language_code": language,
+                "language_code": language,
                 "speaker": speaker,
-                "model": "bulbul:v3",
-                "enable_preprocessing": True,
+                "model": TTS_MODEL,
+                "temperature": TTS_TEMPERATURE,
+                "pace": TTS_PACE,
             }
             if sample_rate:
                 body["speech_sample_rate"] = sample_rate

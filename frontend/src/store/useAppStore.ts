@@ -6,10 +6,10 @@ type Theme = 'dark' | 'light'
 
 interface AppState {
   uiLanguage: string
-  telephonyMode: 'simulation' | 'twilio'
+  telephonyMode: 'simulation' | 'plivo'
   theme: Theme
   setUiLanguage: (code: string) => void
-  setTelephonyMode: (mode: 'simulation' | 'twilio') => void
+  setTelephonyMode: (mode: 'simulation' | 'plivo') => void
   toggleTheme: () => void
 }
 

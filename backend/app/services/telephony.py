@@ -1,8 +1,9 @@
-"""Telephony — Twilio outbound calls (turn-based IVR) with a zero-infra
+"""Telephony — Plivo outbound calls (turn-based IVR) with a zero-infra
 simulation fallback. Simulation calls stay in status "ringing" until the
 frontend submits a reply via /calls/{id}/simulate-reply.
 """
 
+import asyncio
 import logging
 
 from ..config import get_settings
@@ -13,25 +14,21 @@ logger = logging.getLogger("telephony")
 
 def effective_mode() -> str:
     s = get_settings()
-    if s.telephony_mode == "twilio" and s.twilio_configured:
-        return "twilio"
-    if s.telephony_mode == "twilio":
-        if s.twilio_account_sid.startswith("SK"):
-            logger.warning(
-                "TWILIO_ACCOUNT_SID holds an API key (SK…), not an Account SID (AC…) — "
-                "set TWILIO_ACCOUNT_SID=AC… and put the SK… in TWILIO_API_KEY_SID; using simulation"
-            )
-        else:
-            logger.warning("TELEPHONY_MODE=twilio but credentials missing — using simulation")
+    if s.telephony_mode == "plivo" and s.plivo_configured:
+        return "plivo"
+    if s.telephony_mode == "plivo":
+        logger.warning(
+            "TELEPHONY_MODE=plivo but PLIVO_AUTH_ID/PLIVO_AUTH_TOKEN/PLIVO_FROM_NUMBER "
+            "are incomplete — using simulation"
+        )
     return "simulation"
 
 
 def to_e164(phone: str, default_country: str = "91") -> str:
-    """Normalize a stored phone number to the E.164 form Twilio requires.
+    """Normalize a stored phone number to the E.164 form Plivo requires.
 
     Numbers are typed and seeded in local form ("6355351675", "063553 51675"),
-    but Twilio rejects anything that is not E.164 with error 21211, and a trial
-    account only connects to a verified number matched as an exact string.
+    but Plivo needs the country code to route the call at all.
     """
     digits = "".join(c for c in phone if c.isdigit() or c == "+")
     if digits.startswith("+"):
@@ -42,45 +39,12 @@ def to_e164(phone: str, default_country: str = "91") -> str:
     return f"+{default_country}{digits}"
 
 
-def _public_url_reachable() -> bool:
-    """Twilio can only fetch webhooks/audio from a public URL (e.g. ngrok)."""
-    return not get_settings().public_base_url_is_local
-
-
-def stream_ws_url(call_id: int) -> str:
-    return f"{get_settings().public_ws_base_url}/ws/voice/twilio/{call_id}"
-
-
-def streaming_twiml(call_id: int) -> str:
-    """Hand the call's audio to our WebSocket agent.
-
-    `<Connect><Stream>` is bidirectional and blocks until the socket closes,
-    which is what makes a real conversation possible: unlike `<Play>`+`<Record>`,
-    the server can hear the patient *while* it is speaking, so it can be
-    interrupted.
-    """
-    settings = get_settings()
-    if settings.public_base_url_is_local:
-        logger.error(
-            "PUBLIC_BASE_URL is %s — Twilio cannot reach a local address. "
-            "Run `ngrok http 8000` and set PUBLIC_BASE_URL to the https URL it prints.",
-            settings.public_base_url,
-        )
-    return (
-        '<?xml version="1.0" encoding="UTF-8"?>'
-        "<Response>"
-        f'<Connect><Stream url="{_xml_escape(stream_ws_url(call_id))}"/></Connect>'
-        "</Response>"
-    )
-
-
 def place_call(call: CallLog, patient_phone: str) -> None:
-    """Dial (twilio) or arm the simulated call. Mutates call.mode/status/twilio_sid.
+    """Dial (plivo) or arm the simulated call. Mutates call.mode/status/twilio_sid.
 
-    With a public PUBLIC_BASE_URL, the full turn-based IVR runs (webhook TwiML:
-    play TTS + record reply → STT). Without one (no ngrok yet), the call is
-    still placed for real using inline TwiML <Say>, so the patient hears the
-    script — the spoken reply just can't be captured until a tunnel is set up.
+    Plivo has no inline-XML option: it always fetches answer_url when the
+    patient picks up, so a publicly reachable PUBLIC_BASE_URL is mandatory for
+    a real call. The answer XML plays the TTS script and records the reply.
     """
     mode = effective_mode()
     call.mode = mode
@@ -89,103 +53,136 @@ def place_call(call: CallLog, patient_phone: str) -> None:
         return
 
     s = get_settings()
-    try:
-        from twilio.rest import Client
-
-        client = (
-            Client(s.twilio_api_key_sid, s.twilio_auth_token, s.twilio_account_sid)
-            if s.twilio_api_key_sid
-            else Client(s.twilio_account_sid, s.twilio_auth_token)
-        )
-        to_number = to_e164(patient_phone)
-        kwargs: dict = {"to": to_number, "from_": s.twilio_from_number}
-        if _public_url_reachable():
-            kwargs["url"] = f"{s.public_base_url}/twilio/voice/{call.id}"
-            if not s.twilio_trial_account:
-                # Trial accounts reject every Create-a-Call parameter beyond
-                # to/from/url with a 400 ("limited parameter access"), status
-                # callbacks included — so the call is placed without them.
-                kwargs["method"] = "POST"
-                kwargs["status_callback"] = f"{s.public_base_url}/twilio/status/{call.id}"
-                kwargs["status_callback_event"] = ["initiated", "ringing", "answered", "completed"]
-        else:
-            logger.warning(
-                "PUBLIC_BASE_URL is local — placing call %s with inline TwiML (no reply capture)", call.id
-            )
-            kwargs["twiml"] = inline_twiml_for_call(call)
-        logger.info(
-            "dialling call %s: to=%s (stored %r) from=%s via=%s",
-            call.id, to_number, patient_phone, s.twilio_from_number,
-            "webhook" if "url" in kwargs else "inline twiml",
-        )
-        tw_call = client.calls.create(**kwargs)
-        call.twilio_sid = tw_call.sid or ""
-        call.status = "ringing"
-        logger.info("call %s accepted by Twilio: sid=%s", call.id, call.twilio_sid)
-    except Exception as e:  # noqa: BLE001 — twilio failures must surface as failed calls, not 500s
-        code = getattr(e, "code", None)
-        logger.error(
-            "Twilio dial failed for call %s to %s: code=%s %s",
-            call.id, to_number, code, e, exc_info=True,
-        )
+    if s.public_base_url_is_local:
         call.status = "failed"
-        call.error_message = _dial_hint(code, str(e))
+        call.error_message = (
+            f"PUBLIC_BASE_URL is {s.public_base_url} — Plivo must fetch the answer XML and the "
+            "TTS audio over the internet. Start a tunnel (e.g. `cloudflared tunnel --url "
+            "http://localhost:8000`) and set PUBLIC_BASE_URL to the https URL it prints."
+        )
+        logger.error("call %s not placed: %s", call.id, call.error_message)
+        raise TelephonyError(call.error_message)
+
+    to_number = to_e164(patient_phone)
+    try:
+        import plivo
+
+        client = plivo.RestClient(s.plivo_auth_id, s.plivo_auth_token)
+        logger.info(
+            "dialling call %s: to=%s (stored %r) from=%s",
+            call.id, to_number, patient_phone, s.plivo_from_number,
+        )
+        resp = client.calls.create(
+            from_=to_e164(s.plivo_from_number),
+            to_=to_number,
+            answer_url=f"{s.public_base_url}/plivo/voice/{call.id}",
+            answer_method="POST",
+            hangup_url=f"{s.public_base_url}/plivo/hangup/{call.id}",
+            hangup_method="POST",
+        )
+        # Plivo answers with a RequestUUID; the CallUUID only exists once the
+        # call is set up, so the answer webhook overwrites this with it.
+        call.twilio_sid = str(getattr(resp, "request_uuid", "") or "")
+        call.status = "ringing"
+        logger.info("call %s accepted by Plivo: request_uuid=%s", call.id, call.twilio_sid)
+        prepare_dialogue(call.id)
+    except Exception as e:  # noqa: BLE001 — carrier failures must surface as failed calls, not 500s
+        logger.error("Plivo dial failed for call %s to %s: %s", call.id, to_number, e, exc_info=True)
+        call.status = "failed"
+        call.error_message = _dial_hint(e)
         raise TelephonyError(call.error_message)
 
 
-def _dial_hint(code: int | None, message: str) -> str:
-    """Turn a Twilio error into something an operator can act on."""
+_prep_tasks: dict[int, asyncio.Task] = {}
+
+
+def prepare_dialogue(call_id: int) -> None:
+    """Render the call's dialogue while the phone is still ringing.
+
+    Plivo fetches the answer XML the instant the patient picks up, and it waits
+    for our reply — so without this head start the patient's first seconds are
+    silence while a translate and a TTS render happen.
+    """
+    from .voice import agent
+
+    try:
+        task = asyncio.get_running_loop().create_task(agent.prepare_call(call_id))
+    except RuntimeError:  # no event loop — the answer webhook builds it instead
+        return
+    _prep_tasks[call_id] = task
+    task.add_done_callback(lambda _t, cid=call_id: _prep_tasks.pop(cid, None))
+
+
+def preparation_task(call_id: int) -> asyncio.Task | None:
+    """The still-running dialogue preparation for a call, if any.
+
+    A patient who answers before the prewarm finishes should wait for the
+    render already in flight, not pay for a second one from scratch.
+    """
+    return _prep_tasks.get(call_id)
+
+
+def _dial_hint(error: Exception) -> str:
+    """Turn a Plivo error into something an operator can act on."""
+    message = str(error)
+    name = type(error).__name__
     hints = {
-        70051: "Twilio rejected our credentials: the Restricted API key has no permissions. "
-               "Create a Standard key (Console → Account → API keys & tokens).",
-        21211: "Twilio rejected the destination number — it must be in E.164 form (+91…).",
-        21219: "The destination is not a verified number. Trial accounts can only call "
-               "numbers verified in Console → Phone Numbers → Verified Caller IDs.",
-        21210: "The From number is not owned by this Twilio account.",
-        21215: "This account is not enabled for calls to that country (Voice Geo Permissions).",
+        "AuthenticationError": "Plivo rejected our credentials — check PLIVO_AUTH_ID and "
+                               "PLIVO_AUTH_TOKEN (Console → Account → Keys & Credentials).",
+        "ValidationError": "Plivo rejected the request parameters — the from number must be a "
+                           "voice-enabled number on this account and both numbers E.164 (+91…).",
+        "InvalidRequestError": "Plivo rejected the request — check the destination number and "
+                               "that the account has credit and voice permissions for that country.",
     }
-    hint = hints.get(code or 0)
-    return f"{hint} (Twilio {code})" if hint else f"Twilio error {code or '?'}: {message}"[:500]
+    hint = hints.get(name)
+    return (f"{hint} ({message})" if hint else f"Plivo error ({name}): {message}")[:500]
 
 
 class TelephonyError(Exception):
     pass
 
 
-def _say_language(call: CallLog) -> str:
-    """BCP-47 language for Twilio <Say>; falls back to en-IN."""
-    lang = (call.patient.preferred_language if call.patient else "") or "en-IN"
-    return lang
+def data_url(relative_path: str) -> str:
+    """Public URL of a file under DATA_DIR, for Plivo to fetch and play."""
+    return f"{get_settings().public_base_url}/data/{relative_path}"
 
 
-def twiml_for_call(call: CallLog) -> str:
-    """TwiML: play the TTS script, then record the patient's reply."""
-    s = get_settings()
-    audio_url = f"{s.public_base_url}/data/{call.tts_audio_path}" if call.tts_audio_path else ""
-    say_fallback = _xml_escape(call.script_text_translated or call.script_text or "Hello from your care team.")
-    play_or_say = (
-        f"<Play>{_xml_escape(audio_url)}</Play>" if audio_url
-        else f'<Say language="{_say_language(call)}">{say_fallback}</Say>'
-    )
-    return f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  {play_or_say}
-  <Record action="{s.public_base_url}/twilio/recording/{call.id}"
-          method="POST" maxLength="60" timeout="5" playBeep="true"/>
-  <Say>We did not receive a reply. Take care, goodbye.</Say>
-</Response>"""
-
-
-def inline_twiml_for_call(call: CallLog) -> str:
-    """Self-contained TwiML for when no public webhook URL exists:
-    speak the localized script twice with a pause — no recording possible."""
-    text = _xml_escape(call.script_text_translated or call.script_text or "Hello from your care team.")
-    lang = _say_language(call)
+def plivo_response(*elements: str) -> str:
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
-        f'<Response><Say language="{lang}">{text}</Say>'
-        '<Pause length="1"/>'
-        f'<Say language="{lang}">{text}</Say></Response>'
+        f"<Response>{''.join(elements)}</Response>"
+    )
+
+
+def play_element(audio_url: str) -> str:
+    return f"<Play>{_xml_escape(audio_url)}</Play>"
+
+
+def speak_element(text: str) -> str:
+    """Plivo's own voices cover no Indian language, so this is a last resort for
+    when Sarvam TTS produced nothing — not a second rendering path."""
+    return f"<Speak>{_xml_escape(text)}</Speak>"
+
+
+def record_element(action_url: str, *, max_length: int = 25, silence_timeout: int = 2) -> str:
+    """Record one patient turn, ending it on `silence_timeout` seconds of silence.
+
+    This is the turn-taking mechanism: Plivo has no VAD hook, so a silence
+    window ends the turn and posts the audio to `action_url`, which answers with
+    the next question.
+
+    `max_length` must stay under 30 s: Sarvam's synchronous STT rejects longer
+    audio outright, which turns the whole reply into a lost turn. It is also the
+    ceiling on dead air when background noise keeps the silence window from
+    firing.
+
+    `silence_timeout` is most of the perceived wait after the patient stops
+    talking. 2 s is the floor: Hindi replies pause between phrases, and a
+    shorter window cuts them off mid-sentence. `#` still ends a turn instantly.
+    """
+    return (
+        f'<Record action="{_xml_escape(action_url)}" method="POST" fileFormat="wav" '
+        f'maxLength="{max_length}" timeout="{silence_timeout}" finishOnKey="#" playBeep="true"/>'
     )
 
 

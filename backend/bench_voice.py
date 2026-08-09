@@ -53,11 +53,15 @@ def llm(model, max_tokens):
     return go
 
 
+# Mirrors app.services.sarvam so the numbers describe the live call path.
+TTS_BODY = {"speaker": "priya", "model": "bulbul:v3", "temperature": 0.3, "pace": 0.95}
+
+
 def tts(text, lang):
     def go():
         r = httpx.post(
             f"{BASE}/text-to-speech", headers=H, timeout=120,
-            json={"text": text, "target_language_code": lang, "speaker": "priya", "model": "bulbul:v3"},
+            json=TTS_BODY | {"text": text, "language_code": lang},
         )
         d = r.json()
         if "error" in d:
@@ -85,7 +89,7 @@ def stt(wav_bytes):
 def make_clip(text, lang):
     r = httpx.post(
         f"{BASE}/text-to-speech", headers=H, timeout=120,
-        json={"text": text, "target_language_code": lang, "speaker": "priya", "model": "bulbul:v3"},
+        json=TTS_BODY | {"text": text, "language_code": lang},
     )
     return base64.b64decode(r.json()["audios"][0])
 

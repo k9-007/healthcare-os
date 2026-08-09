@@ -131,6 +131,10 @@ async def _place_scheduled_call(db, sc: ScheduledCall, patient: Patient) -> Call
     sc.call_log_id = call.id
     sc.attempts += 1
     sc.status = "placed"
+    # Commit before the carrier round-trip: it releases the SQLite write lock,
+    # and the dialogue prep that runs while the phone rings reads this call in
+    # its own session.
+    db.commit()
 
     try:
         telephony.place_call(call, patient.phone)

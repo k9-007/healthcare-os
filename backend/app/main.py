@@ -12,8 +12,8 @@ from fastapi.staticfiles import StaticFiles
 from .config import get_settings
 from .db import SessionLocal, ensure_schema
 from .routers import (
-    analytics, brain, calls, careplans, documents, patients, schedule,
-    twilio_webhooks, voice_ws,
+    analytics, brain, calls, careplans, documents, patients, plivo_webhooks,
+    schedule, voice_ws,
 )
 from .seed import seed_if_empty
 from .services import scheduler
@@ -45,12 +45,11 @@ async def lifespan(app: FastAPI):
     )
     if settings.public_base_url_is_local:
         logger.warning(
-            "PUBLIC_BASE_URL=%s is not reachable from Twilio. For a real call run "
-            "`ngrok http 8000` and set PUBLIC_BASE_URL to the https URL it prints.",
+            "PUBLIC_BASE_URL=%s is not reachable from Plivo. For a real call run "
+            "`cloudflared tunnel --url http://localhost:8000` (or ngrok) and set "
+            "PUBLIC_BASE_URL to the https URL it prints.",
             settings.public_base_url,
         )
-    else:
-        logger.info("Twilio console test URL: %s/twilio/voice/demo", settings.public_base_url)
     yield
     scheduler.shutdown()
 
@@ -80,7 +79,7 @@ def voice_console():
     """Hold a real conversation with the agent using a browser mic.
 
     Same VoiceAgent as a phone call — useful for demos and for testing the turn
-    loop without a carrier, tunnel, or Twilio spend.
+    loop without a carrier, a tunnel, or carrier spend.
     """
     return FileResponse(Path(__file__).parent / "static" / "voice_console.html")
 
@@ -91,7 +90,7 @@ app.include_router(brain.router)
 app.include_router(calls.router)
 app.include_router(schedule.router)
 app.include_router(analytics.router)
-app.include_router(twilio_webhooks.router)
+app.include_router(plivo_webhooks.router)
 app.include_router(voice_ws.router)
 
 
@@ -111,5 +110,4 @@ def health():
         "time_scale_demo": settings.time_scale_demo,
         "public_base_url": settings.public_base_url,
         "public_url_reachable": not settings.public_base_url_is_local,
-        "twilio_console_twiml_url": f"{settings.public_base_url}/twilio/voice/demo",
     }

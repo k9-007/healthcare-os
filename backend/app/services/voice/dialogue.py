@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from ...models import CallLog, CallTarget, Patient, ScheduledCall
 from ..sarvam import SarvamUnavailable, sarvam
+from ..spoken import medicine_question, speakable
 from . import prewarm
 
 logger = logging.getLogger("voice.dialogue")
@@ -69,18 +70,20 @@ def build_steps(patient: Patient, targets: list[CallTarget], kind: str) -> list[
 
     # One short sentence: TTS time scales with length, and every second here is
     # a second before the patient can say anything.
-    greeting = f"Hello {patient.name}, this is your care assistant from the hospital."
+    greeting = f"Hello {speakable(patient.name)}, this is your care assistant from the hospital."
     steps = [Step(key="greeting", text_en=greeting, kind="greeting")]
 
+    # Labels are prescription shorthand ("Dolo 650mg — after food"); everything
+    # spoken goes through `spoken` first so the voice says words, not fragments.
     for t in meds:
         steps.append(Step(
             key=f"med:{t.ref_id}",
-            text_en=f"Have you taken your {t.label}?",
+            text_en=medicine_question(t.label),
             ref_type="medicine", ref_id=t.ref_id,
         ))
     for t in questions:
         steps.append(Step(
-            key=f"q:{t.ref_id}", text_en=t.label,
+            key=f"q:{t.ref_id}", text_en=speakable(t.label),
             ref_type="followup", ref_id=t.ref_id,
         ))
 

@@ -31,7 +31,7 @@ class PatientCreate(BaseModel):
         if not re.match(r"^\+?\d{5,15}$", cleaned):
             raise ValueError("phone must be 5-15 digits, optionally prefixed with +")
         # Stored in E.164 so a number is dialable the moment it is saved —
-        # Twilio rejects anything else with error 21211.
+        # Plivo needs the country code to route the call at all.
         from .services.telephony import to_e164
 
         return to_e164(cleaned)

@@ -17,6 +17,7 @@ from ..models import (
     FollowUpQuestion, Medicine, Patient, ScheduledCall, utcnow,
 )
 from .sarvam import SarvamUnavailable, sarvam
+from .spoken import speakable
 
 logger = logging.getLogger("careplus")
 
@@ -204,14 +205,23 @@ def backoff_minutes(plan: CarePlan | None, attempt: int) -> int:
 # ---------------- scripts ----------------
 
 async def build_script(kind: str, targets: list[CallTarget], patient: Patient) -> str:
-    """English call script covering exactly the targets of this slot."""
-    med_labels = [t.label for t in targets if t.ref_type == "medicine"]
-    q_labels = [t.label for t in targets if t.ref_type == "followup"]
+    """English call script covering exactly the targets of this slot.
+
+    The script is spoken, never read, so the shorthand in the care plan is
+    expanded before the model sees it — and the model is told to keep it that
+    way, because "650mg" written back into the script is "650mg" mispronounced.
+    """
+    med_labels = [speakable(t.label) for t in targets if t.ref_type == "medicine"]
+    q_labels = [speakable(t.label) for t in targets if t.ref_type == "followup"]
 
     try:
         prompt = (
             "Write a short, warm voice-call script (max 3 sentences, under 380 characters) an AI nurse "
-            f"speaks to patient {patient.name}. Plain spoken language, no markdown, no emojis, no stage directions. "
+            f"speaks to patient {speakable(patient.name)}. Plain spoken language, no markdown, no emojis, "
+            "no stage directions. This text is read aloud by a text-to-speech voice over a phone line, so "
+            "write every number, dose and unit as words exactly as they are given to you (say "
+            '"six hundred fifty milligram", never "650mg"), keep medicine names spelled as given, and use '
+            "no digits, abbreviations, symbols or parentheses anywhere. "
         )
         if kind == "medicine":
             prompt += (
@@ -225,29 +235,33 @@ async def build_script(kind: str, targets: list[CallTarget], patient: Patient) -
             )
         else:
             prompt += "This is a courtesy check-in call. Ask how they are feeling and whether they took their medicines."
-        return await sarvam.chat(
+        script = await sarvam.chat(
             [{"role": "system", "content": "You write natural, clinically safe voice scripts for patients."},
              {"role": "user", "content": prompt}],
             temperature=0.5, max_tokens=2048,
         )
+        # The model still slips a "650mg" through now and then.
+        return speakable(script)
     except SarvamUnavailable:
         return _template_script(kind, med_labels, q_labels, patient)
 
 
 def _template_script(kind: str, meds: list[str], qs: list[str], patient: Patient) -> str:
+    """Fallback script. `meds` and `qs` arrive already expanded for speech."""
+    name = speakable(patient.name)
     if kind == "medicine" and meds:
         return (
-            f"Hello {patient.name}, this is your care assistant from the hospital. "
-            f"It is time to take: {'; '.join(meds)}. "
+            f"Hello {name}, this is your care assistant from the hospital. "
+            f"It is time to take {', then '.join(meds)}. "
             "After the tone, please tell me if you have taken your medicine and how you are feeling."
         )
     if kind == "followup" and qs:
         return (
-            f"Hello {patient.name}, this is your recovery follow-up call. "
+            f"Hello {name}, this is your recovery follow-up call. "
             f"Please answer after the tone: {' '.join(qs)}"
         )
     return (
-        f"Hello {patient.name}, this is your care assistant checking in. "
+        f"Hello {name}, this is your care assistant checking in. "
         "Please tell me how you are feeling and whether you have taken your medicines today."
     )
 

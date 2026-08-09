@@ -370,10 +370,10 @@ async def prepare_call(call_id: int) -> Plan | None:
 
 
 def mark_stream_call_sid(call_id: int, call_sid: str) -> None:
-    """Record the Twilio CallSid seen on the media stream.
+    """Record the call identifier announced on the media stream.
 
-    Console-initiated test calls never go through our REST client, so this is
-    the only place we learn the SID for them.
+    Streamed calls are not placed through our REST client, so this is the only
+    place we learn their carrier-side id.
     """
     if not call_sid:
         return
@@ -382,7 +382,6 @@ def mark_stream_call_sid(call_id: int, call_sid: str) -> None:
         call = db.get(CallLog, call_id)
         if call and not call.twilio_sid:
             call.twilio_sid = call_sid
-            call.mode = "twilio"
             db.commit()
     finally:
         db.close()

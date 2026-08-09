@@ -12,10 +12,15 @@ import asyncio
 import contextlib
 import logging
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from ..db import SessionLocal
-from ..models import CallLog
+from ..config import get_settings
+from ..db import SessionLocal, get_db
+from ..models import CallLog, Patient
+from ..services import careplus
+from ..services.voice import agent as voice_agent
 from ..services.voice.agent import VoiceAgent, mark_stream_call_sid
 from ..services.voice.transport import BrowserTransport, TwilioTransport
 
@@ -31,6 +36,43 @@ def _call_exists(call_id: int) -> bool:
         return db.get(CallLog, call_id) is not None
     finally:
         db.close()
+
+
+@router.api_route("/voice/stream-demo", methods=["GET", "POST"])
+async def stream_demo(
+    patient_id: int | None = None,
+    lang: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Create a call for the streaming agent and hand back the socket to use.
+
+    Exercises the full conversation — VAD, STT, understanding, escalation —
+    without a carrier in the loop; `test_voice_stream.py` drives it.
+    """
+    patient = (
+        db.get(Patient, patient_id) if patient_id
+        else db.scalars(select(Patient).order_by(Patient.id)).first()
+    )
+    if not patient:
+        return {"error": "no patient exists — is the database seeded?"}
+
+    # `lang` applies to this call only; it must not rewrite the patient's record.
+    call = await careplus.create_care_call(db, patient, language=lang, with_script=False)
+    call.status = "ringing"
+    db.commit()
+
+    # Render the dialogue now so the greeting plays the moment the socket opens
+    # instead of after a translate plus a TTS render per line.
+    task = asyncio.create_task(voice_agent.prepare_call(call.id))
+    _prep_tasks.add(task)
+    task.add_done_callback(_prep_tasks.discard)
+
+    ws_url = f"{get_settings().public_ws_base_url}/ws/voice/twilio/{call.id}"
+    logger.info("stream demo → call_id=%s patient=%s lang=%s", call.id, patient.name, lang or "-")
+    return {"call_id": call.id, "ws_url": ws_url, "language": call.detected_language}
+
+
+_prep_tasks: set[asyncio.Task] = set()
 
 
 @router.websocket("/ws/voice/twilio/{call_id}")

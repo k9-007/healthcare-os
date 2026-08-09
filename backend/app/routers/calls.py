@@ -8,7 +8,7 @@ from ..config import get_settings
 from ..db import get_db
 from ..models import CallLog, CareEvent, Patient, ScheduledCall
 from ..schemas import CallCreateOut, CallLogOut, DoctorReplyIn, ReplyProcessOut
-from ..services import careplus, telephony
+from ..services import careplus, spoken, telephony
 
 router = APIRouter(tags=["calls"])
 
@@ -21,7 +21,7 @@ async def trigger_call(patient_id: int, db: Session = Depends(get_db)):
     """Manually place a care call now (demo hero button).
 
     Uses the care plan's medicines as targets if a plan exists, else a generic
-    check-in. Script → translate → TTS → place (twilio | simulation).
+    check-in. Script → translate → TTS → place (plivo | simulation).
     """
     patient = db.get(Patient, patient_id)
     if not patient:
@@ -130,8 +130,14 @@ async def doctor_reply(patient_id: int, payload: DoctorReplyIn, db: Session = De
     if not patient:
         raise HTTPException(404, "patient not found")
 
+    # The doctor types clinically ("Dolo 650mg SOS"); the patient hears it, so
+    # the spoken copy is expanded to words while the Care Graph keeps the
+    # original wording.
     message = payload.message.strip()
-    script_en = f"Hello {patient.name}, this is a message from your doctor. {message} Take care."
+    script_en = (
+        f"Hello {spoken.speakable(patient.name)}, this is a message from your doctor. "
+        f"{spoken.speakable(message)} Take care."
+    )
     script_local = await careplus.localize_script(script_en, patient.preferred_language)
     audio_path = await careplus.synthesize(script_local, patient.preferred_language)
 

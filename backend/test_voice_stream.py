@@ -191,7 +191,7 @@ async def main() -> int:
     )
     ap.add_argument(
         "--base", default=API, metavar="URL",
-        help="backend base URL; point at the public tunnel to test the path Twilio uses",
+        help="backend base URL; point at the public tunnel to test the path a carrier uses",
     )
     args = ap.parse_args()
     api = args.base.rstrip("/")
@@ -203,14 +203,13 @@ async def main() -> int:
         params = {"lang": args.lang}
         if args.patient:
             params["patient_id"] = args.patient
-        print("\nfetching TwiML from the console demo entrypoint…")
-        twiml = (await http.post(f"{api}/twilio/voice/demo", params=params)).text
-        print(f"  {twiml}")
-        if "Stream" not in twiml:
-            print("!! not a streaming TwiML response")
+        print("\ncreating a call on the stream demo entrypoint…")
+        demo = (await http.post(f"{api}/voice/stream-demo", params=params)).json()
+        if "call_id" not in demo:
+            print(f"!! {demo}")
             return 1
-        call_id = int(twiml.split("/ws/voice/twilio/")[1].split('"')[0])
-        print(f"  call_id={call_id}")
+        call_id = demo["call_id"]
+        print(f"  call_id={call_id} language={demo.get('language')}")
 
         lines = SCENARIOS[args.scenario].get(args.lang) or SCENARIOS[args.scenario]["en-IN"]
         print(f"\npreparing patient replies ({args.scenario}, {args.lang})…")

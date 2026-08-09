@@ -12,19 +12,15 @@ class Settings(BaseSettings):
     sarvam_base_url: str = "https://api.sarvam.ai"
 
     # Telephony
-    telephony_mode: str = "simulation"  # "twilio" | "simulation"
-    twilio_account_sid: str = ""  # must be the AC… Account SID
-    twilio_auth_token: str = ""  # account auth token, or the API key secret
-    twilio_api_key_sid: str = ""  # optional SK… API key; auth token is then its secret
-    twilio_from_number: str = ""
+    telephony_mode: str = "simulation"  # "plivo" | "simulation"
+    plivo_auth_id: str = ""  # MA…/SA… Auth ID from the Plivo console
+    plivo_auth_token: str = ""
+    plivo_from_number: str = ""  # a voice-enabled Plivo number, E.164
     public_base_url: str = "http://localhost:8000"
 
-    # Real-time voice (VAD endpointing + turn taking)
+    # Real-time voice (VAD endpointing + turn taking) — used by the WebSocket
+    # agent behind the browser voice console; phone calls are turn-based IVR.
     voice_mode: str = "stream"  # "stream" = conversation | "classic" = <Play>+<Record>
-    # Trial accounts strip <Stream> from TwiML and replace it with a spoken
-    # "not available on trial accounts", so a real call gets no conversation.
-    # <Play> is still allowed, which at least lets the patient hear the script.
-    twilio_trial_account: bool = False
     vad_speech_threshold: float = 0.5  # Silero probability for a frame to count as speech
     vad_start_ms: int = 150  # sustained speech before the patient is "talking"
     vad_silence_ms: int = 600  # trailing silence that ends a turn — the main feel knob
@@ -69,14 +65,8 @@ class Settings(BaseSettings):
         return self.data_path / "recordings"
 
     @property
-    def twilio_configured(self) -> bool:
-        # Twilio always addresses calls under the AC… account, even when
-        # authenticating with an SK… API key.
-        return bool(
-            self.twilio_account_sid.startswith("AC")
-            and self.twilio_auth_token
-            and self.twilio_from_number
-        )
+    def plivo_configured(self) -> bool:
+        return bool(self.plivo_auth_id and self.plivo_auth_token and self.plivo_from_number)
 
     @property
     def sarvam_configured(self) -> bool:
@@ -84,7 +74,7 @@ class Settings(BaseSettings):
 
     @property
     def public_base_url_is_local(self) -> bool:
-        """Twilio can only reach a public host — localhost means no tunnel yet."""
+        """Plivo can only reach a public host — localhost means no tunnel yet."""
         return any(h in self.public_base_url for h in ("localhost", "127.0.0.1", "0.0.0.0"))
 
     @property

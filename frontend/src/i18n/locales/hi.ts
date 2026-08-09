@@ -199,7 +199,11 @@ const hi: Translation = {
     refused: 'अस्वीकृत — कोई आधार नहीं मिला',
     confidence: '{{pct}}% विश्वास',
     placeholder: 'डिस्चार्ज सारांश, प्रोटोकॉल, लैब, ट्रांसक्रिप्ट में पूछें…',
+    placeholderPatient: '{{name}} के बारे में पूछें — उनके दस्तावेज़ + अस्पताल का ज्ञान…',
     ask: 'पूछें',
+    sources: 'स्रोत',
+    scopeGeneral: 'सामान्य',
+    scopeTitle: 'उत्तर का दायरा: सामान्य ज्ञान या कोई विशेष मरीज़',
   },
   documents: {
     dropTitle: 'PDF या स्कैन यहाँ छोड़ें, या क्लिक करके चुनें',
@@ -209,6 +213,16 @@ const hi: Translation = {
     indexed: 'इंडेक्स्ड',
     extracting: 'निकाला जा रहा है',
     failed: 'विफल',
+    scopeAll: 'सभी दस्तावेज़',
+    scopeGeneral: 'सामान्य — पूरे अस्पताल के लिए',
+    general: 'सामान्य',
+    uploadTargetPatient: 'नए अपलोड {{name}} से जुड़ेंगे — केवल उनके ब्रेन दायरे में दिखेंगे।',
+    uploadTargetGeneral: 'नए अपलोड सामान्य हैं — हर मरीज़ के दायरे में उपलब्ध।',
+    scopeEmpty: 'इस दायरे में अभी कोई दस्तावेज़ नहीं — ऊपर एक छोड़कर इंजेस्ट करें।',
+  },
+  scopePicker: {
+    search: 'नाम, #आईडी या फ़ोन खोजें…',
+    empty: 'कोई मेल नहीं — नाम, #आईडी या फ़ोन आज़माएँ।',
   },
   settings: {
     telephony: 'टेलीफ़ोनी',

@@ -1,10 +1,11 @@
 import { useRef, useState, type DragEvent } from 'react'
 import { useTranslation } from 'react-i18next'
-import { FileText, FileUp, Loader2 } from 'lucide-react'
+import { Building2, FileText, FileUp, Loader2, UserRound } from 'lucide-react'
 import type { HospitalDoc } from '@/api/types'
-import { useDocuments, useUploadDocument } from '@/api/hooks'
+import { useDocuments, usePatients, useUploadDocument } from '@/api/hooks'
 import { timeAgo } from '@/lib/format'
 import { cx, Skeleton, Tag } from '@/components/ui/primitives'
+import { ScopePicker } from '@/components/ScopePicker'
 
 const TYPE_LABEL: Record<HospitalDoc['type'], string> = {
   guideline: 'Guideline',
@@ -17,19 +18,58 @@ const TYPE_LABEL: Record<HospitalDoc['type'], string> = {
 export function Documents() {
   const { t } = useTranslation()
   const { data: docs } = useDocuments()
+  const { data: patients } = usePatients()
   const upload = useUploadDocument()
   const [dragging, setDragging] = useState(false)
+  // 'all' shows everything; 'general' = hospital-wide docs; number = one patient.
+  const [scope, setScope] = useState<'all' | 'general' | number>('all')
   const inputRef = useRef<HTMLInputElement>(null)
+
+  const uploadPatientId = typeof scope === 'number' ? scope : null
+  const scopePatient = uploadPatientId != null ? patients?.find((p) => p.id === uploadPatientId) : undefined
+
+  const visible = docs?.filter((d) =>
+    scope === 'all' ? true : scope === 'general' ? d.patientId == null : d.patientId === scope,
+  )
+
+  function patientName(id: number | null): string | undefined {
+    if (id == null) return undefined
+    return patients?.find((p) => p.id === id)?.name ?? 'Patient'
+  }
 
   function onDrop(e: DragEvent) {
     e.preventDefault()
     setDragging(false)
     const file = e.dataTransfer.files?.[0]
-    if (file) upload.mutate(file)
+    if (file) upload.mutate({ file, patientId: uploadPatientId })
   }
 
   return (
     <div className="space-y-5">
+      {/* scope selector */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <ScopePicker
+          value={scope}
+          onChange={(v) => setScope(v === 'all' || v === 'general' ? v : (v as number))}
+          patients={patients}
+          staticOptions={[
+            { value: 'all', label: t('documents.scopeAll', { defaultValue: 'All documents' }), icon: 'files' },
+            { value: 'general', label: t('documents.scopeGeneral', { defaultValue: 'General — hospital-wide' }), icon: 'building' },
+          ]}
+          triggerClassName="h-9"
+        />
+        <p className="text-[11px] text-faint">
+          {scopePatient
+            ? t('documents.uploadTargetPatient', {
+                defaultValue: 'New uploads attach to {{name}} — visible in their Brain scope only.',
+                name: scopePatient.name,
+              })
+            : t('documents.uploadTargetGeneral', {
+                defaultValue: 'New uploads are general — available to every patient scope.',
+              })}
+        </p>
+      </div>
+
       {/* dropzone */}
       <button
         onClick={() => inputRef.current?.click()}
@@ -57,20 +97,24 @@ export function Documents() {
           hidden
           onChange={(e) => {
             const f = e.target.files?.[0]
-            if (f) upload.mutate(f)
+            if (f) upload.mutate({ file: f, patientId: uploadPatientId })
             e.target.value = ''
           }}
         />
       </button>
 
       {/* document grid */}
-      {!docs ? (
+      {!visible ? (
         <div className="grid gap-3 md:grid-cols-2">
           {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-32" />)}
         </div>
+      ) : visible.length === 0 ? (
+        <p className="rounded-lg border border-dashed border-line-strong px-4 py-8 text-center text-xs text-faint">
+          {t('documents.scopeEmpty', { defaultValue: 'No documents in this scope yet — drop one above to ingest it.' })}
+        </p>
       ) : (
         <div className="grid gap-3 md:grid-cols-2">
-          {docs.map((d) => (
+          {visible.map((d) => (
             <article key={d.id} className="panel flex flex-col p-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-center gap-2.5">
@@ -82,6 +126,18 @@ export function Documents() {
                     <p className="num mt-0.5 text-[11px] text-mist">
                       {TYPE_LABEL[d.type]} · {d.pages} pages · {d.sizeKb > 1024 ? `${(d.sizeKb / 1024).toFixed(1)} MB` : `${d.sizeKb} KB`} · {timeAgo(d.uploadedAt)}
                     </p>
+                    <span
+                      className={cx(
+                        'mt-1.5 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium',
+                        d.patientId != null
+                          ? 'border-violet/30 bg-violet/10 text-violet'
+                          : 'border-line-strong bg-raised text-mist',
+                      )}
+                    >
+                      {d.patientId != null ? <UserRound size={9} /> : <Building2 size={9} />}
+                      {patientName(d.patientId) ?? t('documents.general', { defaultValue: 'General' })}
+                      {d.patientId != null && <span className="num opacity-70">#{d.patientId}</span>}
+                    </span>
                   </div>
                 </div>
                 <StatusTag status={d.status} />

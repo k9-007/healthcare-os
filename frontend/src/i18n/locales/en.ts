@@ -197,7 +197,11 @@ const en = {
     refused: 'Refused — no grounding found',
     confidence: '{{pct}}% confidence',
     placeholder: 'Ask across discharge summaries, protocols, labs, transcripts…',
+    placeholderPatient: 'Ask about {{name}} — their docs + hospital knowledge…',
     ask: 'Ask',
+    sources: 'Sources',
+    scopeGeneral: 'General',
+    scopeTitle: 'Answer scope: general knowledge or a specific patient',
   },
   documents: {
     dropTitle: 'Drop a PDF or scan here, or click to browse',
@@ -207,6 +211,16 @@ const en = {
     indexed: 'indexed',
     extracting: 'extracting',
     failed: 'failed',
+    scopeAll: 'All documents',
+    scopeGeneral: 'General — hospital-wide',
+    general: 'General',
+    uploadTargetPatient: 'New uploads attach to {{name}} — visible in their Brain scope only.',
+    uploadTargetGeneral: 'New uploads are general — available to every patient scope.',
+    scopeEmpty: 'No documents in this scope yet — drop one above to ingest it.',
+  },
+  scopePicker: {
+    search: 'Search name, #id or phone…',
+    empty: 'No match — try a name, #id or phone.',
   },
   settings: {
     telephony: 'Telephony',

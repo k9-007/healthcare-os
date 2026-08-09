@@ -92,11 +92,12 @@ def place_call(call: CallLog, patient_phone: str) -> None:
     try:
         from twilio.rest import Client
 
-        client = (
-            Client(s.twilio_api_key_sid, s.twilio_auth_token, s.twilio_account_sid)
-            if s.twilio_api_key_sid
-            else Client(s.twilio_account_sid, s.twilio_auth_token)
-        )
+        # Prefer dedicated API key secret when set; else auth token doubles as secret.
+        if s.twilio_api_key_sid:
+            secret = s.twilio_api_key_secret or s.twilio_auth_token
+            client = Client(s.twilio_api_key_sid, secret, s.twilio_account_sid)
+        else:
+            client = Client(s.twilio_account_sid, s.twilio_auth_token)
         to_number = to_e164(patient_phone)
         kwargs: dict = {"to": to_number, "from_": s.twilio_from_number}
         if _public_url_reachable():

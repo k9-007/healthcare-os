@@ -38,6 +38,8 @@ TELEPHONY_SAMPLE_RATE = 8000
 
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 MAX_RETRIES = 3
+# Sarvam Vision hard limit per doc-digitization job.
+VISION_MAX_PAGES = 10
 
 
 class SarvamUnavailable(Exception):
@@ -109,32 +111,34 @@ class SarvamClient:
         timeout: float = 90.0,
         retries: int = MAX_RETRIES,
     ) -> str:
-        body = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-        out = await self._request(
-            "POST", "/v1/chat/completions", json_body=body, timeout=timeout, retries=retries
-        )
-        try:
-            choice = out["choices"][0]
-            message = choice["message"]
-        except (KeyError, IndexError) as e:
-            raise SarvamUnavailable(f"unexpected chat response shape: {e}")
-
-        # sarvam-105b reasons before answering and bills reasoning_content against
-        # the same completion budget, so `content` is null whenever the budget runs
-        # out mid-thought. Treat that as unavailable rather than crashing.
-        content = (message.get("content") or "").strip()
-        if content:
-            return content
-        if choice.get("finish_reason") == "length":
-            raise SarvamUnavailable(
-                f"response truncated after {max_tokens} tokens of reasoning, no answer produced"
+        # Reasoning models can spend the whole budget on reasoning_content
+        # (finish_reason=length, content=None). Retry once with 4x budget.
+        last_choice = None
+        for tokens in (max_tokens, max_tokens * 4):
+            body = {
+                "model": model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": tokens,
+            }
+            out = await self._request(
+                "POST", "/v1/chat/completions", json_body=body, timeout=timeout, retries=retries
             )
-        raise SarvamUnavailable("chat returned empty content")
+            try:
+                last_choice = out["choices"][0]
+                message = last_choice["message"]
+            except (KeyError, IndexError) as e:
+                raise SarvamUnavailable(f"unexpected chat response shape: {e}")
+            content = (message.get("content") or "").strip()
+            if content:
+                return content
+            logger.warning("chat returned empty content (max_tokens=%d); retrying larger", tokens)
+
+        if last_choice and last_choice.get("finish_reason") == "length":
+            raise SarvamUnavailable(
+                f"response truncated after {max_tokens * 4} tokens of reasoning, no answer produced"
+            )
+        raise SarvamUnavailable("chat returned empty content after retry")
 
     async def chat_json(self, messages: list[dict[str, str]], **kw) -> dict | list:
         """Chat call that must return JSON; tolerates code fences and prose around it."""
@@ -301,18 +305,53 @@ class SarvamClient:
     # ---------- Vision document digitization (async job) ----------
 
     async def vision_extract(self, file_path: str, language: str = "en-IN") -> str:
-        """PDF/image → markdown via the doc-digitization job pipeline."""
+        """PDF/image → markdown. Sarvam Vision allows max 10 pages per job, so
+        oversized PDFs are split into ≤10-page parts, extracted part by part,
+        and stitched back together with page markers (kept accurate for Brain
+        citations)."""
+        p = Path(file_path)
+        if not p.exists():
+            raise SarvamUnavailable(f"file not found: {file_path}")
+
+        parts = _split_pdf_if_needed(p, VISION_MAX_PAGES)
+        if len(parts) == 1:
+            return await self._vision_extract_single(str(parts[0][1]), language)
+
+        logger.info("PDF exceeds %d pages — split into %d Vision jobs", VISION_MAX_PAGES, len(parts))
+        sections: list[str] = []
+        try:
+            for start_page, part_path in parts:
+                md = await self._vision_extract_single(str(part_path), language)
+                sections.append(f"<!-- page: {start_page} -->\n{md}")
+        finally:
+            for _, part_path in parts:
+                if part_path != p:
+                    part_path.unlink(missing_ok=True)
+        return "\n\n".join(sections)
+
+    async def _vision_extract_single(self, file_path: str, language: str = "en-IN") -> str:
+        """Single ≤10-page document → markdown via the doc-digitization job pipeline.
+
+        Pipeline (per Sarvam Document Intelligence API):
+          1. POST /doc-digitization/job/v1            {"job_parameters": {...}} → job_id
+          2. POST /doc-digitization/job/v1/upload-files {"job_id", "files": [name]} → presigned upload_urls
+          3. PUT file bytes to the presigned URL (with returned file_metadata headers)
+          4. POST /doc-digitization/job/v1/{job_id}/start
+          5. GET  /doc-digitization/job/v1/{job_id}/status  until job_state terminal
+          6. POST /doc-digitization/job/v1/{job_id}/download-files → ZIP/markdown output
+        """
         p = Path(file_path)
         if not p.exists():
             raise SarvamUnavailable(f"file not found: {file_path}")
         headers = self._headers()
+        job_base = f"{self.base}/doc-digitization/job/v1"
 
         async with httpx.AsyncClient(timeout=120.0) as client:
-            # 1. create job
+            # 1. create job — params MUST be wrapped in job_parameters
             resp = await client.post(
-                f"{self.base}/doc-digitization/job/v1",
+                job_base,
                 headers=headers,
-                json={"language": language, "output_format": "md"},
+                json={"job_parameters": {"language": language, "output_format": "md"}},
             )
             if resp.status_code >= 400:
                 raise SarvamUnavailable(f"vision job create failed [{resp.status_code}]: {resp.text[:300]}")
@@ -321,43 +360,82 @@ class SarvamClient:
             if not job_id:
                 raise SarvamUnavailable(f"vision job create: no job id in {str(job)[:200]}")
 
-            # 2. upload to presigned target (shape differs across versions — probe common keys)
-            upload_url = _dig(job, "upload_url") or _dig(job, "presigned_url") or _dig(job, "url")
-            if upload_url:
-                up = await client.put(upload_url, content=p.read_bytes())
-                if up.status_code >= 400:
-                    raise SarvamUnavailable(f"vision upload failed [{up.status_code}]")
-            else:
-                up = await client.post(
-                    f"{self.base}/doc-digitization/job/v1/{job_id}/upload",
-                    headers=headers,
-                    files={"file": (p.name, p.read_bytes(), guess_mime(p.name))},
-                )
-                if up.status_code >= 400:
-                    raise SarvamUnavailable(f"vision upload failed [{up.status_code}]: {up.text[:200]}")
+            # 2. get presigned upload URL for our file
+            up_resp = await client.post(
+                f"{job_base}/upload-files",
+                headers=headers,
+                json={"job_id": job_id, "files": [p.name]},
+            )
+            if up_resp.status_code >= 400:
+                raise SarvamUnavailable(f"vision upload-files failed [{up_resp.status_code}]: {up_resp.text[:300]}")
+            upload_urls = up_resp.json().get("upload_urls") or {}
+            if not upload_urls:
+                raise SarvamUnavailable(f"vision upload-files: no upload_urls in {up_resp.text[:200]}")
+            file_details = next(iter(upload_urls.values()))
+            presigned_url = file_details["file_url"]
+            file_metadata = file_details.get("file_metadata") or {}
 
-            # 3. start
-            st = await client.post(f"{self.base}/doc-digitization/job/v1/{job_id}/start", headers=headers)
+            # 3. PUT the bytes to the presigned URL (no Sarvam auth headers here)
+            put_headers = {str(k): str(v) for k, v in file_metadata.items()}
+            put_headers["Content-Type"] = guess_mime(p.name)
+            # Azure Blob presigned PUTs require the blob type header
+            put_headers.setdefault("x-ms-blob-type", "BlockBlob")
+            up = await client.put(presigned_url, content=p.read_bytes(), headers=put_headers)
+            if up.status_code >= 400:
+                raise SarvamUnavailable(f"vision upload failed [{up.status_code}]: {up.text[:200]}")
+
+            # 4. start
+            st = await client.post(f"{job_base}/{job_id}/start", headers=headers, json={})
             if st.status_code >= 400:
                 raise SarvamUnavailable(f"vision start failed [{st.status_code}]: {st.text[:200]}")
 
-            # 4. poll (bounded)
+            # 5. poll (bounded)
+            status: dict = {}
             deadline = time.monotonic() + 300
             while time.monotonic() < deadline:
-                s = await client.get(f"{self.base}/doc-digitization/job/v1/{job_id}/status", headers=headers)
+                s = await client.get(f"{job_base}/{job_id}/status", headers=headers)
                 if s.status_code >= 400:
                     raise SarvamUnavailable(f"vision status failed [{s.status_code}]")
-                state = (s.json().get("status") or s.json().get("state") or "").lower()
-                if state in {"completed", "success", "succeeded"}:
-                    out_url = _dig(s.json(), "output_url") or _dig(s.json(), "download_url")
-                    if not out_url:
-                        raise SarvamUnavailable("vision completed but no output url")
-                    dl = await client.get(out_url)
-                    return _md_from_output(dl.content)
+                status = s.json()
+                state = (status.get("job_state") or status.get("status") or "").lower()
+                if state in {"completed", "partiallycompleted", "success", "succeeded"}:
+                    break
                 if state in {"failed", "error"}:
                     raise SarvamUnavailable(f"vision job failed: {s.text[:300]}")
-                await asyncio.sleep(5)
-        raise SarvamUnavailable("vision job timed out after 300s")
+                await asyncio.sleep(4)
+            else:
+                raise SarvamUnavailable("vision job timed out after 300s")
+
+            # 6. download output — POST {job_id}/download-files with the output names
+            #    (listed in status job_details[].outputs) → presigned download_urls
+            out_names = [
+                o.get("file_name")
+                for detail in (status.get("job_details") or [])
+                for o in (detail.get("outputs") or [])
+                if o.get("file_name")
+            ] or ["document.zip"]
+            dl_resp = await client.post(
+                f"{job_base}/{job_id}/download-files", headers=headers, json={"files": out_names}
+            )
+            if dl_resp.status_code >= 400:
+                raise SarvamUnavailable(
+                    f"vision download-files failed [{dl_resp.status_code}]: {dl_resp.text[:200]}"
+                )
+            download_urls = dl_resp.json().get("download_urls") or {}
+            if not download_urls:
+                raise SarvamUnavailable(f"vision completed but no download urls in {dl_resp.text[:300]}")
+            parts: list[str] = []
+            for name in out_names:
+                url = (download_urls.get(name) or {}).get("file_url")
+                if not url:
+                    continue
+                dl = await client.get(url)
+                if dl.status_code >= 400:
+                    raise SarvamUnavailable(f"vision output download failed [{dl.status_code}]")
+                parts.append(_md_from_output(dl.content))
+            if not parts:
+                raise SarvamUnavailable("vision completed but outputs could not be downloaded")
+            return "\n\n".join(parts)
 
 
 # ---------- helpers ----------
@@ -484,6 +562,36 @@ def guess_mime(filename: str) -> str:
     }.get(ext, "application/octet-stream")
 
 
+def _split_pdf_if_needed(p: Path, max_pages: int) -> list[tuple[int, Path]]:
+    """Return [(start_page, path)] parts, splitting PDFs longer than max_pages.
+
+    Non-PDFs and short PDFs come back unchanged as a single part. Split parts
+    are temp files next to the original (cleaned up by the caller).
+    """
+    if p.suffix.lower() != ".pdf":
+        return [(1, p)]
+    try:
+        from pypdf import PdfReader, PdfWriter
+
+        reader = PdfReader(str(p))
+        total = len(reader.pages)
+        if total <= max_pages:
+            return [(1, p)]
+        parts: list[tuple[int, Path]] = []
+        for start in range(0, total, max_pages):
+            writer = PdfWriter()
+            for page in reader.pages[start : start + max_pages]:
+                writer.add_page(page)
+            part_path = p.with_name(f"{p.stem}_part{start // max_pages + 1}.pdf")
+            with part_path.open("wb") as fh:
+                writer.write(fh)
+            parts.append((start + 1, part_path))
+        return parts
+    except Exception as e:  # noqa: BLE001 — fall back to the original file; Vision will report its own error
+        logger.warning("PDF split failed (%s); sending original file as-is", e)
+        return [(1, p)]
+
+
 def _dig(obj: dict, key: str) -> str | None:
     """Find `key` anywhere in a nested dict."""
     if isinstance(obj, dict):
@@ -505,10 +613,20 @@ def _md_from_output(content: bytes) -> str:
                 if name.endswith((".md", ".txt")):
                     parts.append(z.read(name).decode("utf-8", errors="replace"))
             if parts:
-                return "\n\n".join(parts)
+                return _strip_embedded_images("\n\n".join(parts))
     except zipfile.BadZipFile:
         pass
-    return content.decode("utf-8", errors="replace")
+    return _strip_embedded_images(content.decode("utf-8", errors="replace"))
+
+
+def _strip_embedded_images(md: str) -> str:
+    """Drop base64 data-URI images Vision embeds — they bloat the Brain index
+    and carry no text (the OCR text is already in the markdown)."""
+    import re
+
+    md = re.sub(r"!\[[^\]]*\]\(data:[^)]*\)", "[image]", md)
+    md = re.sub(r"data:image/[a-zA-Z+]+;base64,[A-Za-z0-9+/=\s]+", "[image]", md)
+    return md
 
 
 sarvam = SarvamClient()

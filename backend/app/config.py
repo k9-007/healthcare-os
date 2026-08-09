@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     twilio_account_sid: str = ""  # must be the AC… Account SID
     twilio_auth_token: str = ""  # account auth token, or the API key secret
     twilio_api_key_sid: str = ""  # optional SK… API key; auth token is then its secret
+    twilio_api_key_secret: str = ""  # optional separate API key secret
     twilio_from_number: str = ""
     public_base_url: str = "http://localhost:8000"
 
@@ -67,6 +68,13 @@ class Settings(BaseSettings):
     @property
     def recordings_dir(self) -> Path:
         return self.data_path / "recordings"
+
+    @property
+    def twilio_has_auth(self) -> bool:
+        """Either classic auth token, or an API key SID + secret pair."""
+        return bool(self.twilio_auth_token) or bool(
+            self.twilio_api_key_sid and self.twilio_api_key_secret
+        )
 
     @property
     def twilio_configured(self) -> bool:

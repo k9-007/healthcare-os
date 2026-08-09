@@ -613,6 +613,163 @@ flowchart LR
 ### 15.4 One sentence for the judges
 
 > A patient is discharged, and from that moment HealthcareOS **reads their records (Vision)**, **plans and speaks to them in their language (LLM + Translate + TTS)**, **listens and understands their replies (STT + Text Analytics)**, **draws their recovery as an explainable Care Graph**, **escalates danger instantly**, **lets the doctor answer with cited evidence (Brain)**, **closes the loop with an automated callback**, and **rolls it all into hospital-wide intelligence** — the entire arc from a single bedside to the hospital boardroom, powered end-to-end by Sarvam.
+
+## 16. Frontend plan
+
+### 16.1 Stack & libraries
+
+| Concern | Choice | Why |
+|---|---|---|
+| Framework | **React 18 + Vite + TypeScript** | Fast HMR, tiny config |
+| Styling | **Tailwind + shadcn/ui (Radix)** | Beautiful, accessible, fast |
+| Routing | **React Router v6** | Standard SPA routing |
+| Server state | **TanStack Query** | Caching + loading/error states |
+| Client state | **Zustand** | activePatient, uiLang, callSession |
+| Charts | **Recharts** | KPI tiles + trends |
+| Timeline | **Custom + framer-motion** | Care Graph animation |
+| Icons | **lucide-react** | Clinical iconography |
+| Audio | **MediaRecorder + audio** | Record reply / play TTS |
+| Forms | **react-hook-form + zod** | Care plan validation |
+| i18n | **i18next** + Sarvam Translate | Multilingual UI + content |
+
+### 16.2 Design system
+
+- **Theme:** dark clinical — navy `#0b1220`, panels `#111a2e`, cyan/violet accents.
+- **Layout:** left sidebar + top bar (search + language switcher + notifications) + content.
+- **Status colors:** good `#34d399`, warn `#fbbf24`, critical `#f87171`; escalations pulse red.
+- **A11y:** Radix primitives, focus rings, ARIA on audio controls.
+
+### 16.3 Route map
+
+```mermaid
+flowchart LR
+  Root["/ (AppShell)"] --> Dash["/dashboard"]
+  Root --> Pats["/patients"]
+  Pats --> PDetail["/patients/:id"]
+  PDetail --> Tab1["overview"]
+  PDetail --> Tab2["care-plan"]
+  PDetail --> Tab3["calls"]
+  PDetail --> Tab4["care-graph"]
+  Root --> Brain["/brain"]
+  Root --> Docs["/documents"]
+  Root --> Settings["/settings"]
+```
+
+### 16.4 Component tree
+
+```mermaid
+flowchart TD
+  App["AppShell (Sidebar + TopBar + LanguageSwitcher)"]
+  App --> Dashboard
+  App --> Patients
+  App --> PatientDetail
+  App --> BrainPage
+  App --> Documents
+  Dashboard --> KpiTile
+  Dashboard --> AdherenceChart
+  Dashboard --> RiskList
+  Dashboard --> EscalationFeed
+  Patients --> PatientTable
+  Patients --> NewPatientDialog
+  PatientDetail --> PatientHeader
+  PatientDetail --> CarePlanBuilder
+  PatientDetail --> CallPanel
+  PatientDetail --> CareGraph
+  PatientDetail --> CallSummaryCard
+  CarePlanBuilder --> MedicineRow
+  CarePlanBuilder --> FollowUpQuestionRow
+  CallPanel --> AudioRecorder
+  CallPanel --> AudioPlayer
+  CallPanel --> TranscriptView
+  CallPanel --> StructuredFields
+  BrainPage --> BrainChat
+  BrainChat --> MessageBubble
+  BrainChat --> CitationChip
+  Documents --> UploadDropzone
+  Documents --> DocumentCard
+```
+
+### 16.5 Screen-by-screen
+
+- **Dashboard** — KPI tiles (adherence %, missed doses, at-risk, escalations, follow-up completion, call success), adherence trend chart, top diseases, live escalation feed.
+- **Patients** — searchable table (name, diagnosis, language, adherence, risk, next follow-up) + New Patient dialog.
+- **Patient Detail (tabbed)** — *Overview* (profile + latest AI call summary), *Care Plan* (builder + Enable Care+), *Calls* (history + CallPanel), *Care Graph* (animated timeline).
+- **Brain** — chat with inline citation chips (doc + page) + confidence bar + expandable snippets.
+- **Documents** — drag-drop upload → extraction status → extracted markdown preview.
+
+### 16.6 The call panel (hero interaction)
+
+```mermaid
+sequenceDiagram
+  actor Doc as Doctor (UI)
+  participant FE as CallPanel
+  participant BE as FastAPI
+  Doc->>FE: Click Call patient
+  FE->>BE: POST /patients/:id/call
+  BE-->>FE: call_id, tts_audio_url, script
+  FE->>FE: AudioPlayer plays TTS
+  Doc->>FE: Record reply (sim) / patient answers (twilio)
+  FE->>BE: POST /calls/:id/simulate-reply (audio)
+  BE-->>FE: transcript, language, structured, escalation?
+  FE->>FE: Render transcript + fields + update Care Graph
+```
+
+### 16.7 State & data flow
+
+```mermaid
+flowchart LR
+  UI["Components"] -->|hooks| Q["TanStack Query"]
+  Q -->|fetch/mutate| API["api/client.ts"]
+  API --> BE["FastAPI"]
+  UI --> Z["Zustand (activePatient, uiLang, callSession)"]
+  Q -->|invalidate on mutation| UI
+```
+
+- Query keys: `['patients']`, `['patient',id]`, `['timeline',id]`, `['analytics']`, `['documents']`.
+- Mutations (`createCall`, `submitReply`, `askBrain`, `savePlan`, `uploadDoc`) invalidate keys → live UI.
+
+### 16.8 Multi-language UI
+
+- UI chrome localized via **i18next** (`en`, `hi`, `ta`, …) — string tables auto-generated with Sarvam **Translate/localize**.
+- Dynamic content translated on demand via backend Sarvam Translate.
+- Language switcher sets both `uiLang` and default `preferred_language` for new calls.
+- Optional transliteration to show romanized text beside native script.
+
+### 16.9 Frontend build phases
+
+| Phase | Work |
+|---|---|
+| F0 | Vite+TS+Tailwind+shadcn scaffold, AppShell, router, theme, api client |
+| F1 | Patients list + New Patient + Patient Detail shell |
+| F2 | CarePlanBuilder + Enable Care+ |
+| F3 | CallPanel (record/playback, transcript, fields) |
+| F4 | Care Graph timeline (animated) |
+| F5 | Brain chat + citations + Documents upload |
+| F6 | Dashboard KPIs + charts |
+| F7 | i18n, language switcher, polish, loading/error states |
+
+### 16.10 Folder structure (frontend)
+
+```
+frontend/
+├── index.html · vite.config.ts · tailwind.config.ts · tsconfig.json
+└── src/
+    ├── main.tsx · App.tsx · router.tsx
+    ├── api/client.ts · api/hooks.ts
+    ├── store/useAppStore.ts
+    ├── lib/ languages.ts · audio.ts · format.ts
+    ├── i18n/ index.ts · locales/{en,hi,ta}.json
+    ├── components/
+    │   ├── layout/ AppShell · Sidebar · TopBar · LanguageSwitcher
+    │   ├── patients/ PatientTable · NewPatientDialog · PatientHeader
+    │   ├── care/ CarePlanBuilder · MedicineRow · FollowUpQuestionRow
+    │   ├── calls/ CallPanel · AudioRecorder · AudioPlayer · TranscriptView · StructuredFields · CallSummaryCard
+    │   ├── graph/ CareGraph · TimelineNode
+    │   ├── brain/ BrainChat · MessageBubble · CitationChip
+    │   ├── documents/ UploadDropzone · DocumentCard
+    │   └── ui/ (shadcn primitives) · KpiTile · Charts
+    └── pages/ Dashboard · Patients · PatientDetail · Brain · Documents · Settings
+```
 </script>
 
 <script type="module">

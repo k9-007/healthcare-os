@@ -583,3 +583,184 @@ flowchart LR
 ### 15.4 One sentence for the judges
 
 > A patient is discharged, and from that moment HealthcareOS **reads their records (Vision)**, **plans and speaks to them in their language (LLM + Translate + TTS)**, **listens and understands their replies (STT + Text Analytics)**, **draws their recovery as an explainable Care Graph**, **escalates danger instantly**, **lets the doctor answer with cited evidence (Brain)**, **closes the loop with an automated callback**, and **rolls it all up into hospital-wide intelligence** — the entire arc from a single bedside to the hospital boardroom, powered end-to-end by Sarvam.
+
+---
+
+## 16. Frontend plan
+
+### 16.1 Stack & libraries
+
+| Concern | Choice | Why |
+|---|---|---|
+| Framework | **React 18 + Vite + TypeScript** | Fast HMR, tiny config, great DX |
+| Styling | **Tailwind CSS** + **shadcn/ui** (Radix) | Beautiful, accessible components fast |
+| Routing | **React Router v6** | Standard SPA routing |
+| Server state | **TanStack Query** | Caching, refetch, loading/error states |
+| Client state | **Zustand** (light) | Selected patient, language, call session |
+| Charts | **Recharts** | Analytics tiles + trends |
+| Timeline / graph | **Custom + framer-motion** | Care Graph animation |
+| Icons | **lucide-react** | Clean clinical iconography |
+| Audio | **MediaRecorder API** + `<audio>` | Record patient reply / play TTS |
+| Forms | **react-hook-form + zod** | Care plan builder validation |
+| i18n | **i18next** (UI) + Sarvam Translate (content) | Multilingual UI + data |
+
+### 16.2 Design system
+
+- **Theme:** dark clinical — deep navy base (`#0b1220`), panels (`#111a2e`), cyan/violet accents; light mode optional.
+- **Typography:** Inter / system UI; numeric tabular for KPIs.
+- **Layout:** left sidebar nav + top bar (search + language switcher + notifications) + content area.
+- **Language switcher:** global; drives both UI locale (i18next) and default patient call language.
+- **Status colors:** adherence good `#34d399`, warn `#fbbf24`, critical `#f87171`; escalations pulse red.
+- **Accessibility:** Radix primitives, focus rings, ARIA on audio controls, large tap targets.
+
+### 16.3 Route map
+
+```mermaid
+flowchart LR
+  Root["/ (AppShell)"] --> Dash["/dashboard"]
+  Root --> Pats["/patients"]
+  Pats --> PDetail["/patients/:id"]
+  PDetail --> Tab1["overview"]
+  PDetail --> Tab2["care-plan"]
+  PDetail --> Tab3["calls"]
+  PDetail --> Tab4["care-graph"]
+  Root --> Brain["/brain"]
+  Root --> Docs["/documents"]
+  Root --> Settings["/settings"]
+```
+
+### 16.4 Component tree
+
+```mermaid
+flowchart TD
+  App["AppShell<br/>(Sidebar + TopBar + LanguageSwitcher)"]
+  App --> Dashboard
+  App --> Patients
+  App --> PatientDetail
+  App --> BrainPage
+  App --> Documents
+
+  Dashboard --> KpiTile
+  Dashboard --> AdherenceChart
+  Dashboard --> RiskList
+  Dashboard --> EscalationFeed
+
+  Patients --> PatientTable
+  Patients --> NewPatientDialog
+
+  PatientDetail --> PatientHeader
+  PatientDetail --> CarePlanBuilder
+  PatientDetail --> CallPanel
+  PatientDetail --> CareGraph
+  PatientDetail --> CallSummaryCard
+
+  CarePlanBuilder --> MedicineRow
+  CarePlanBuilder --> FollowUpQuestionRow
+  CallPanel --> AudioRecorder
+  CallPanel --> AudioPlayer
+  CallPanel --> TranscriptView
+  CallPanel --> StructuredFields
+
+  BrainPage --> BrainChat
+  BrainChat --> MessageBubble
+  BrainChat --> CitationChip
+  Documents --> UploadDropzone
+  Documents --> DocumentCard
+```
+
+### 16.5 Screen-by-screen
+
+**Dashboard** — hospital command center.
+- KPI tiles: adherence %, missed doses, patients at risk, escalations, follow-up completion, call success rate.
+- Adherence trend (Recharts line), top diseases, recent escalations feed (live red items).
+
+**Patients** — searchable table (name, diagnosis, language, adherence, risk badge, next follow-up) + "New Patient" dialog.
+
+**Patient Detail** — tabbed:
+- *Overview*: profile, current meds, latest AI call summary card (adherence, symptoms, pain, next follow-up).
+- *Care Plan*: `CarePlanBuilder` — add medicines (name/dose/schedule) + follow-up questions (typed) + language; "Enable Patient Care+".
+- *Calls*: history + `CallPanel` — trigger call, play TTS, record/upload reply, see transcript + structured fields + detected language/confidence.
+- *Care Graph*: animated vertical timeline (discharge → med → call → missed → alert → advice → recovered) with severity colors.
+
+**Brain** — chat UI; answers render with inline `CitationChip`s (doc + page) and a confidence bar; source snippets expandable.
+
+**Documents** — drag-drop upload → shows extraction status (pending/extracting/ready) → preview extracted markdown.
+
+### 16.6 The call panel (hero interaction)
+
+```mermaid
+sequenceDiagram
+  actor Doc as Doctor (UI)
+  participant FE as CallPanel
+  participant BE as FastAPI
+  Doc->>FE: Click "Call patient"
+  FE->>BE: POST /patients/:id/call
+  BE-->>FE: { call_id, tts_audio_url, script_text }
+  FE->>FE: <AudioPlayer> plays TTS (the "call")
+  Doc->>FE: Click record → speak reply (sim) / patient answers (twilio)
+  FE->>BE: POST /calls/:id/simulate-reply (audio blob)
+  BE-->>FE: { transcript, language, structured, events, escalation? }
+  FE->>FE: Render TranscriptView + StructuredFields + update CareGraph
+```
+
+- Simulation mode: `MediaRecorder` captures mic → upload as reply.
+- Twilio mode: panel polls `GET /calls/:id` for status/result.
+- Live language badge shows Sarvam-detected language + confidence.
+
+### 16.7 State & data flow
+
+```mermaid
+flowchart LR
+  UI["Components"] -->|hooks| Q["TanStack Query"]
+  Q -->|fetch/mutate| API["api/client.ts (axios)"]
+  API --> BE["FastAPI"]
+  UI --> Z["Zustand store<br/>(activePatient, uiLang, callSession)"]
+  Q -->|invalidate on mutation| UI
+```
+
+- Query keys: `['patients']`, `['patient', id]`, `['timeline', id]`, `['analytics']`, `['documents']`.
+- Mutations (`createCall`, `submitReply`, `askBrain`, `savePlan`, `uploadDoc`) invalidate related keys so UI updates live.
+- Optimistic UI on care-plan edits.
+
+### 16.8 Multi-language UI handling
+
+- **UI chrome** localized via i18next (`en`, `hi`, `ta`, …) with a JSON string table — can be auto-generated using Sarvam **Translate/localize**.
+- **Dynamic content** (patient replies, doctor advice) translated on demand via backend Sarvam Translate.
+- Language switcher in TopBar sets both `uiLang` (i18next) and the default `preferred_language` for new calls.
+- Transliteration option to show romanized text alongside native script for reviewers.
+
+### 16.9 Frontend build phases
+
+| Phase | Work |
+|---|---|
+| F0 | Vite+TS+Tailwind+shadcn scaffold, AppShell, router, theme, api client |
+| F1 | Patients list + New Patient + Patient Detail shell |
+| F2 | CarePlanBuilder (forms) + Enable Care+ |
+| F3 | CallPanel (record/playback, transcript, structured fields) |
+| F4 | Care Graph timeline (animated) |
+| F5 | Brain chat + citations + Documents upload |
+| F6 | Dashboard KPIs + charts |
+| F7 | i18n, language switcher, polish, empty/loading/error states |
+
+### 16.10 Folder structure (frontend)
+
+```
+frontend/
+├── index.html · vite.config.ts · tailwind.config.ts · tsconfig.json
+└── src/
+    ├── main.tsx · App.tsx · router.tsx
+    ├── api/client.ts · api/hooks.ts
+    ├── store/useAppStore.ts
+    ├── lib/ languages.ts · audio.ts · format.ts
+    ├── i18n/ index.ts · locales/{en,hi,ta}.json
+    ├── components/
+    │   ├── layout/ AppShell · Sidebar · TopBar · LanguageSwitcher
+    │   ├── patients/ PatientTable · NewPatientDialog · PatientHeader
+    │   ├── care/ CarePlanBuilder · MedicineRow · FollowUpQuestionRow
+    │   ├── calls/ CallPanel · AudioRecorder · AudioPlayer · TranscriptView · StructuredFields · CallSummaryCard
+    │   ├── graph/ CareGraph · TimelineNode
+    │   ├── brain/ BrainChat · MessageBubble · CitationChip
+    │   ├── documents/ UploadDropzone · DocumentCard
+    │   └── ui/ (shadcn primitives) · KpiTile · Charts
+    └── pages/ Dashboard · Patients · PatientDetail · Brain · Documents · Settings
+```

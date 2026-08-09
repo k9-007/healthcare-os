@@ -1,29 +1,107 @@
+import asyncio
 import logging
 import time
 
 import httpx
 from fastapi import APIRouter, Depends, Request, Response
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..db import get_db
-from ..models import CallLog
+from ..models import CallLog, Patient
 from ..services import careplus, telephony
+from ..services.voice import agent
 
 logger = logging.getLogger("twilio")
 router = APIRouter(prefix="/twilio", tags=["twilio"])
 
 
-@router.post("/voice/{call_id}")
-def voice(call_id: int, db: Session = Depends(get_db)):
-    """Twilio fetches TwiML when the patient answers: play TTS, record reply."""
+def _xml(content: str) -> Response:
+    return Response(content=content, media_type="application/xml")
+
+
+NOT_FOUND_TWIML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    "<Response><Say>Sorry, this call could not be set up.</Say></Response>"
+)
+
+
+def _prepare_in_background(call_id: int) -> None:
+    """Render the dialogue while Twilio dials, instead of before we answer it.
+
+    Twilio abandons a call if the TwiML webhook takes longer than ~15s, and
+    preparing a plan costs translate plus a TTS render per line. The agent
+    rebuilds the plan itself if the stream somehow wins the race.
+    """
+    task = asyncio.create_task(agent.prepare_call(call_id))
+    _prep_tasks.add(task)
+    task.add_done_callback(_prep_tasks.discard)
+
+
+_prep_tasks: set[asyncio.Task] = set()
+
+
+# Declared before /voice/{call_id} so "demo" is never parsed as a call id.
+@router.api_route("/voice/demo", methods=["GET", "POST"])
+async def voice_demo(
+    patient_id: int | None = None,
+    lang: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Self-contained TwiML entrypoint for the Twilio Console's "Make a test call".
+
+    The console dials using its own session, so this path needs neither an
+    Account SID nor working REST auth on our side — only a publicly reachable
+    URL. It creates the CallLog and its care-plan targets on the fly, then
+    connects the media stream, which makes it the fastest way to prove a real
+    conversation (and Indian call termination) end to end.
+    """
+    patient = (
+        db.get(Patient, patient_id) if patient_id
+        else db.scalars(select(Patient).order_by(Patient.id)).first()
+    )
+    if not patient:
+        logger.error("demo call requested but no patient exists — is the database seeded?")
+        return _xml(NOT_FOUND_TWIML)
+
+    # `lang` applies to this call only; it must not rewrite the patient's record.
+    call = await careplus.create_care_call(db, patient, language=lang, with_script=False)
+    call.mode = "twilio"
+    call.status = "ringing"
+    db.commit()
+
+    logger.info(
+        "console test call → call_id=%s patient=%s lang=%s stream=%s",
+        call.id, patient.name, call.detected_language, telephony.stream_ws_url(call.id),
+    )
+    _prepare_in_background(call.id)
+    return _xml(telephony.streaming_twiml(call.id))
+
+
+@router.api_route("/voice/{call_id}", methods=["GET", "POST"])
+async def voice(call_id: int, db: Session = Depends(get_db)):
+    """TwiML served when the patient answers.
+
+    VOICE_MODE=stream hands the audio to the conversational agent over a media
+    stream; "classic" keeps the original play-then-record flow as a fallback for
+    when a WebSocket cannot be established.
+    """
     call = db.get(CallLog, call_id)
     if not call:
-        return Response(
-            content='<?xml version="1.0" encoding="UTF-8"?><Response><Say>Call not found.</Say></Response>',
-            media_type="application/xml",
+        return _xml(NOT_FOUND_TWIML)
+    settings = get_settings()
+    if settings.voice_mode == "stream" and settings.twilio_trial_account:
+        logger.warning(
+            "call %s: TWILIO_TRIAL_ACCOUNT is set — serving <Play> TwiML because "
+            "trial accounts strip <Stream>. Upgrade the account for a real conversation.",
+            call_id,
         )
-    return Response(content=telephony.twiml_for_call(call), media_type="application/xml")
+        return _xml(telephony.twiml_for_call(call))
+    if settings.voice_mode == "stream":
+        _prepare_in_background(call_id)
+        return _xml(telephony.streaming_twiml(call_id))
+    return _xml(telephony.twiml_for_call(call))
 
 
 @router.post("/recording/{call_id}")

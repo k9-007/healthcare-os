@@ -133,7 +133,7 @@ async def _ask_llm(question: str, rows) -> BrainAnswerOut:
                 "You navigate a hospital document tree like a clinician flipping to the right section. "
                 "Given a question and a table of contents of nodes, pick the node indices most likely to "
                 f"contain the answer (at most {MAX_SELECTED_NODES}). "
-                'Respond with pure JSON: {"nodes": [int], "reasoning": str}'
+                'Respond with pure JSON and nothing else: {"nodes": [int]}'
             )},
             {"role": "user", "content": f"Question: {question}\n\nTable of contents:\n{toc}"},
         ],
@@ -159,7 +159,7 @@ async def _ask_llm(question: str, rows) -> BrainAnswerOut:
             {"role": "system", "content": CITE_OR_REFUSE_SYSTEM},
             {"role": "user", "content": f"SOURCE NODES:\n{sources}\n\nQUESTION: {question}"},
         ],
-        temperature=0.2, max_tokens=800,
+        temperature=0.2, max_tokens=4096,
     )
 
     refused = bool(result.get("refused"))

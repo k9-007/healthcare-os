@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>HealthcareOS — Live Voice Console</title>
+<style>
+  :root {
+    --bg:#0b1020; --panel:#141b31; --line:#243156; --text:#e6ecff;
+    --muted:#8ea0c9; --accent:#4f8cff; --warn:#ffb020; --bad:#ff5c68; --good:#37d399;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--text);
+    font:15px/1.5 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  header { padding:20px 24px; border-bottom:1px solid var(--line); }
+  h1 { margin:0 0 4px; font-size:19px; font-weight:650; letter-spacing:-.01em; }
+  .sub { color:var(--muted); font-size:13px; }
+  main { max-width:900px; margin:0 auto; padding:24px; }
+  .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:18px; }
+  select, button {
+    font:inherit; border-radius:9px; border:1px solid var(--line);
+    background:var(--panel); color:var(--text); padding:9px 14px;
+  }
+  button { cursor:pointer; font-weight:560; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.danger { background:var(--bad); border-color:var(--bad); color:#fff; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .status { display:flex; align-items:center; gap:9px; color:var(--muted); font-size:13px; }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--muted); }
+  .dot.live { background:var(--good); box-shadow:0 0 0 4px rgba(55,211,153,.16); }
+  .dot.speak { background:var(--accent); box-shadow:0 0 0 4px rgba(79,140,255,.16); }
+  .meter { height:5px; background:var(--panel); border-radius:99px; overflow:hidden; width:170px; }
+  .meter > i { display:block; height:100%; width:0; background:var(--good); transition:width .07s linear; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:13px; padding:16px; }
+  .turn { padding:11px 13px; border-radius:10px; margin-bottom:9px; }
+  .turn.nurse { background:rgba(79,140,255,.10); border-left:3px solid var(--accent); }
+  .turn.patient { background:rgba(55,211,153,.09); border-left:3px solid var(--good); }
+  .turn .who { font-size:11px; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); }
+  .turn .meta { font-size:11px; color:var(--muted); margin-top:3px; }
+  .empty { color:var(--muted); font-size:13px; padding:10px 0; }
+  .alert {
+    margin-top:14px; padding:12px 14px; border-radius:10px;
+    background:rgba(255,92,104,.13); border:1px solid var(--bad); color:#ffd6da;
+  }
+  code { background:#0d1428; padding:1px 6px; border-radius:5px; font-size:13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Live Voice Console</h1>
+  <div class="sub">
+    Your microphone becomes the patient's phone. Same agent, same VAD turn-taking,
+    same Sarvam speech-to-text and escalation logic that a real call runs.
+  </div>
+</header>
+
+<main>
+  <div class="row">
+    <select id="patient"></select>
+    <button id="start" class="primary">Start call</button>
+    <button id="stop" class="danger" disabled>Hang up</button>
+    <div class="status">
+      <span class="dot" id="dot"></span><span id="state">idle</span>
+      <span class="meter"><i id="level"></i></span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div id="turns"><div class="empty">Start a call and answer out loud when the nurse asks a question.</div></div>
+    <div id="alert"></div>
+  </div>
+</main>
+
+<script>
+const API = location.origin;
+const FRAME_SAMPLES = 160;              // 20 ms at 8 kHz
+const RATE = 8000;
+const $ = id => document.getElementById(id);
+
+let ws, ctx, micNode, micStream, callId, poll;
+let nextPlayAt = 0, sources = [], outQueue = [];
+
+function setState(text, cls) {
+  $("state").textContent = text;
+  $("dot").className = "dot" + (cls ? " " + cls : "");
+}
+
+async function loadPatients() {
+  const list = await (await fetch(`${API}/patients`)).json();
+  $("patient").innerHTML = list
+    .map(p => `<option value="${p.id}">${p.name} — ${p.preferred_language}</option>`)
+    .join("");
+}
+
+// Browsers won't always give us an 8 kHz AudioContext, so resample by hand
+// when they don't. Linear interpolation is plenty for telephony band.
+function resample(input, from, to) {
+  if (from === to) return input;
+  const ratio = from / to;
+  const out = new Float32Array(Math.floor(input.length / ratio));
+  for (let i = 0; i < out.length; i++) {
+    const pos = i * ratio, idx = Math.floor(pos), frac = pos - idx;
+    out[i] = (input[idx] || 0) * (1 - frac) + (input[idx + 1] || 0) * frac;
+  }
+  return out;
+}
+
+function floatToPcm16(samples) {
+  const buf = new ArrayBuffer(samples.length * 2);
+  const view = new DataView(buf);
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return buf;
+}
+
+function pcm16ToFloat(buf) {
+  const view = new DataView(buf);
+  const out = new Float32Array(buf.byteLength / 2);
+  for (let i = 0; i < out.length; i++) out[i] = view.getInt16(i * 2, true) / 32768;
+  return out;
+}
+
+function playChunk(pcm) {
+  const samples = pcm16ToFloat(pcm);
+  const up = resample(samples, RATE, ctx.sampleRate);
+  const buffer = ctx.createBuffer(1, up.length, ctx.sampleRate);
+  buffer.copyToChannel(up, 0);
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  src.connect(ctx.destination);
+  const at = Math.max(ctx.currentTime + 0.02, nextPlayAt);
+  src.start(at);
+  nextPlayAt = at + buffer.duration;
+  sources.push(src);
+  src.onended = () => { sources = sources.filter(s => s !== src); };
+  setState("nurse speaking", "speak");
+}
+
+function stopPlayback() {
+  sources.forEach(s => { try { s.stop(); } catch (e) {} });
+  sources = [];
+  nextPlayAt = 0;
+}
+
+function sendMarkWhenDrained() {
+  const waitMs = Math.max(0, (nextPlayAt - ctx.currentTime) * 1000);
+  setTimeout(() => {
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ event: "mark" }));
+    setState("listening — your turn", "live");
+  }, waitMs);
+}
+
+async function start() {
+  $("start").disabled = true;
+  $("turns").innerHTML = '<div class="empty">Placing call…</div>';
+  $("alert").innerHTML = "";
+  setState("connecting");
+
+  const patientId = $("patient").value;
+  const res = await fetch(`${API}/patients/${patientId}/call`, { method: "POST" });
+  const data = await res.json();
+  if (!res.ok) {
+    $("turns").innerHTML =
+      `<div class="empty">Could not place the call: ${escapeHtml(data.detail || res.statusText)}</div>`;
+    $("start").disabled = false;
+    setState("failed");
+    return;
+  }
+  callId = data.call.id;
+  if (!data.stream_url) {
+    $("turns").innerHTML =
+      '<div class="empty">Backend is not in streaming voice mode — set <code>VOICE_MODE=stream</code>.</div>';
+    $("start").disabled = false;
+    return;
+  }
+
+  ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: RATE });
+  micStream = await navigator.mediaDevices.getUserMedia({
+    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  });
+  // Autoplay policy starts the context suspended, and a suspended context
+  // neither runs the mic processor nor plays the nurse. The click that got us
+  // here is the user gesture that allows resuming.
+  if (ctx.state !== "running") await ctx.resume();
+
+  const wsUrl = data.stream_url.replace(/^wss?:\/\/[^/]+/, location.origin.replace(/^http/, "ws"));
+  ws = new WebSocket(wsUrl);
+  ws.binaryType = "arraybuffer";
+
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ event: "start" }));
+    setState("connected", "live");
+    startMic();
+    poll = setInterval(refreshTurns, 1200);
+  };
+  ws.onmessage = ev => {
+    // One bad chunk must never tear down a live call: without this, a throw
+    // here propagates out of the handler and the call dies mid-sentence.
+    try {
+      if (typeof ev.data !== "string") return playChunk(ev.data);
+      const msg = JSON.parse(ev.data);
+      if (msg.event === "expect_mark") sendMarkWhenDrained();
+      else if (msg.event === "clear") stopPlayback();
+    } catch (err) {
+      console.error("voice console: dropped a message", err);
+    }
+  };
+  ws.onclose = () => stop(true);
+
+  $("stop").disabled = false;
+}
+
+function startMic() {
+  const source = ctx.createMediaStreamSource(micStream);
+  micNode = ctx.createScriptProcessor(1024, 1, 1);
+  let carry = new Float32Array(0);
+
+  micNode.onaudioprocess = e => {
+    const input = e.inputBuffer.getChannelData(0);
+    let level = 0;
+    for (let i = 0; i < input.length; i++) level = Math.max(level, Math.abs(input[i]));
+    $("level").style.width = Math.min(100, level * 220) + "%";
+
+    const down = resample(input, ctx.sampleRate, RATE);
+    const merged = new Float32Array(carry.length + down.length);
+    merged.set(carry); merged.set(down, carry.length);
+
+    let offset = 0;
+    while (merged.length - offset >= FRAME_SAMPLES) {
+      const frame = merged.subarray(offset, offset + FRAME_SAMPLES);
+      if (ws && ws.readyState === 1) ws.send(floatToPcm16(frame));
+      offset += FRAME_SAMPLES;
+    }
+    carry = merged.slice(offset);
+  };
+  source.connect(micNode);
+  micNode.connect(ctx.destination);  // Safari won't run the processor unconnected
+}
+
+async function refreshTurns() {
+  if (!callId) return;
+  const call = await (await fetch(`${API}/calls/${callId}`)).json();
+  const turns = call.turns || [];
+  if (!turns.length) return;
+  $("turns").innerHTML = turns.map(t => `
+    <div class="turn ${t.role}">
+      <div class="who">${t.role} · ${t.step_key || "—"}</div>
+      <div>${escapeHtml(t.text)}</div>
+      <div class="meta">
+        ${t.latency_ms ? t.latency_ms + " ms" : ""}${t.barge_in ? " · interrupted the nurse" : ""}
+      </div>
+    </div>`).join("");
+
+  const urgent = (call.responses || []).find(r => r.key === "urgency" && r.value === "high");
+  $("alert").innerHTML = urgent
+    ? '<div class="alert"><b>Escalation raised.</b> Red-flag symptoms were detected mid-call and the care team has been alerted.</div>'
+    : "";
+}
+
+function escapeHtml(s) {
+  return (s || "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+}
+
+function stop(fromServer) {
+  clearInterval(poll);
+  stopPlayback();
+  if (micNode) { micNode.disconnect(); micNode = null; }
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  if (ws && ws.readyState === 1) {
+    if (!fromServer) ws.send(JSON.stringify({ event: "stop" }));
+    ws.close();
+  }
+  if (ctx) { ctx.close(); ctx = null; }
+  setState("call ended");
+  $("start").disabled = false;
+  $("stop").disabled = true;
+  setTimeout(refreshTurns, 1500);
+}
+
+$("start").onclick = () => start().catch(err => {
+  $("turns").innerHTML = `<div class="empty">Could not start: ${escapeHtml(err.message)}</div>`;
+  $("start").disabled = false;
+  setState("failed");
+});
+$("stop").onclick = () => stop(false);
+loadPatients();
+</script>
+</body>
+</html>

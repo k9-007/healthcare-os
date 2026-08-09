@@ -4,7 +4,7 @@
       "command": "uvx",
       "args": ["sarvam-mcp"],
       "env": {
-        "SARVAM_API_KEY": "sk_n24qudj4_Rq8wtJpqpYHYh7y0e96a86aZ"
+        "SARVAM_API_KEY": "sk_5y778g1q_A5lnOxKJI1DT1V73Dj6yjiTO"
       }
     }
   }

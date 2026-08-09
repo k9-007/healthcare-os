@@ -27,7 +27,14 @@ logger = logging.getLogger("sarvam")
 # TTS hard limit is ~500 chars per call; keep headroom.
 TTS_CHUNK_CHARS = 450
 # Languages supported by bulbul TTS (subset of the 23 STT/translate languages).
-DEFAULT_SPEAKER = "anushka"
+DEFAULT_SPEAKER = "priya"
+
+# sarvam-105b reasons before answering: high quality, tens of seconds.
+REASONING_MODEL = "sarvam-105b"
+# Answers directly in well under a second — the only viable model mid-call.
+CONVERSATION_MODEL = "sarvam-105b-conversations"
+# Telephony sample rate; TTS renders natively at 8 kHz so nothing is resampled.
+TELEPHONY_SAMPLE_RATE = 8000
 
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 MAX_RETRIES = 3
@@ -58,11 +65,12 @@ class SarvamClient:
         data: dict | None = None,
         files: dict | None = None,
         timeout: float = 60.0,
+        retries: int = MAX_RETRIES,
     ) -> Any:
         headers = self._headers()
         url = path if path.startswith("http") else f"{self.base}{path}"
         last_err: Exception | None = None
-        for attempt in range(1, MAX_RETRIES + 1):
+        for attempt in range(1, retries + 1):
             try:
                 async with httpx.AsyncClient(timeout=timeout) as client:
                     resp = await client.request(
@@ -83,11 +91,11 @@ class SarvamClient:
                 raise
             except Exception as e:  # network errors + retryable statuses
                 last_err = e
-                if attempt < MAX_RETRIES:
+                if attempt < retries:
                     delay = 1.5 * (2 ** (attempt - 1))
                     logger.warning("Sarvam %s attempt %d failed (%s); retrying in %.1fs", path, attempt, e, delay)
                     await asyncio.sleep(delay)
-        raise SarvamUnavailable(f"Sarvam {path} failed after {MAX_RETRIES} attempts: {last_err}")
+        raise SarvamUnavailable(f"Sarvam {path} failed after {retries} attempts: {last_err}")
 
     # ---------- LLM ----------
 
@@ -96,38 +104,78 @@ class SarvamClient:
         messages: list[dict[str, str]],
         *,
         temperature: float = 0.4,
-        max_tokens: int = 1024,
+        max_tokens: int = 4096,
+        model: str = REASONING_MODEL,
+        timeout: float = 90.0,
+        retries: int = MAX_RETRIES,
     ) -> str:
         body = {
-            "model": "sarvam-105b",
+            "model": model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
-        out = await self._request("POST", "/v1/chat/completions", json_body=body, timeout=90.0)
+        out = await self._request(
+            "POST", "/v1/chat/completions", json_body=body, timeout=timeout, retries=retries
+        )
         try:
-            return out["choices"][0]["message"]["content"].strip()
+            choice = out["choices"][0]
+            message = choice["message"]
         except (KeyError, IndexError) as e:
             raise SarvamUnavailable(f"unexpected chat response shape: {e}")
+
+        # sarvam-105b reasons before answering and bills reasoning_content against
+        # the same completion budget, so `content` is null whenever the budget runs
+        # out mid-thought. Treat that as unavailable rather than crashing.
+        content = (message.get("content") or "").strip()
+        if content:
+            return content
+        if choice.get("finish_reason") == "length":
+            raise SarvamUnavailable(
+                f"response truncated after {max_tokens} tokens of reasoning, no answer produced"
+            )
+        raise SarvamUnavailable("chat returned empty content")
 
     async def chat_json(self, messages: list[dict[str, str]], **kw) -> dict | list:
         """Chat call that must return JSON; tolerates code fences and prose around it."""
         raw = await self.chat(messages, **kw)
         return extract_json(raw)
 
+    async def chat_fast(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float = 0.4,
+        max_tokens: int = 200,
+        timeout: float = 8.0,
+        retries: int = 1,
+    ) -> str:
+        """Sub-second chat for live calls.
+
+        REASONING_MODEL thinks before answering and bills that thinking against
+        the completion budget, so it needs thousands of tokens and tens of
+        seconds — unusable while someone waits on the phone. CONVERSATION_MODEL
+        answers directly in ~0.8s.
+        """
+        return await self.chat(
+            messages, temperature=temperature, max_tokens=max_tokens,
+            model=CONVERSATION_MODEL, timeout=timeout, retries=retries,
+        )
+
     # ---------- Translate ----------
 
-    async def translate(self, text: str, target_language: str, source_language: str = "auto") -> str:
+    async def translate(self, text: str, target_language: str, source_language: str = "en-IN") -> str:
         if not text.strip():
             return text
         if target_language.split("-")[0] == "en" and source_language.split("-")[0] == "en":
             return text
         body = {
             "input": text[:2000],
+            # sarvam-translate:v1 rejects "auto" and only supports mode "formal"
             "source_language_code": source_language,
             "target_language_code": target_language,
             "model": "sarvam-translate:v1",
-            "mode": "modern-colloquial",
+            "mode": "formal",
         }
         out = await self._request("POST", "/translate", json_body=body)
         return out.get("translated_text") or text
@@ -140,20 +188,33 @@ class SarvamClient:
 
     # ---------- TTS ----------
 
-    async def tts(self, text: str, language: str, speaker: str = DEFAULT_SPEAKER) -> bytes:
+    async def tts(
+        self,
+        text: str,
+        language: str,
+        speaker: str = DEFAULT_SPEAKER,
+        *,
+        sample_rate: int | None = None,
+        timeout: float = 90.0,
+        retries: int = MAX_RETRIES,
+    ) -> bytes:
         """Synthesize speech, chunking around the per-request char limit,
         and return a single concatenated WAV byte blob."""
         chunks = split_for_tts(text, TTS_CHUNK_CHARS)
         wavs: list[bytes] = []
         for chunk in chunks:
-            body = {
+            body: dict[str, Any] = {
                 "text": chunk,
                 "target_language_code": language,
                 "speaker": speaker,
                 "model": "bulbul:v3",
                 "enable_preprocessing": True,
             }
-            out = await self._request("POST", "/text-to-speech", json_body=body, timeout=90.0)
+            if sample_rate:
+                body["speech_sample_rate"] = sample_rate
+            out = await self._request(
+                "POST", "/text-to-speech", json_body=body, timeout=timeout, retries=retries
+            )
             audios = out.get("audios") or []
             if not audios:
                 raise SarvamUnavailable("TTS returned no audio")
@@ -168,17 +229,35 @@ class SarvamClient:
         path.write_bytes(audio)
         return f"audio/{name}"
 
+    async def tts_telephony(
+        self, text: str, language: str, speaker: str = DEFAULT_SPEAKER, *, timeout: float = 20.0
+    ) -> bytes:
+        """WAV rendered at 8 kHz for the live call path — no resampling, and a
+        short timeout because a hung TTS call is dead air on the phone."""
+        return await self.tts(
+            text, language, speaker,
+            sample_rate=TELEPHONY_SAMPLE_RATE, timeout=timeout, retries=2,
+        )
+
     # ---------- STT ----------
 
     async def stt(
-        self, audio_bytes: bytes, filename: str = "reply.wav", language_hint: str | None = None
+        self,
+        audio_bytes: bytes,
+        filename: str = "reply.wav",
+        language_hint: str | None = None,
+        *,
+        timeout: float = 120.0,
+        retries: int = MAX_RETRIES,
     ) -> tuple[str, str, float]:
         """Returns (transcript, detected_language, confidence)."""
         data: dict[str, str] = {"model": "saarika:v2.5"}
         if language_hint:
             data["language_code"] = language_hint
         files = {"file": (filename, audio_bytes, guess_mime(filename))}
-        out = await self._request("POST", "/speech-to-text", data=data, files=files, timeout=120.0)
+        out = await self._request(
+            "POST", "/speech-to-text", data=data, files=files, timeout=timeout, retries=retries
+        )
         transcript = out.get("transcript") or ""
         lang = out.get("language_code") or language_hint or ""
         conf = 0.0
@@ -195,6 +274,29 @@ class SarvamClient:
         data = {"text": text[:8000], "questions": json.dumps(questions)}
         out = await self._request("POST", "/text-analytics", data=data, timeout=90.0)
         return out.get("answers") or []
+
+    async def text_analytics_llm(self, text: str, questions: list[dict]) -> list[dict]:
+        """Same typed Q&A contract as text_analytics, answered by the chat model.
+
+        /text-analytics is not enabled on every Sarvam plan, so this keeps the
+        structured-extraction quality of an LLM instead of dropping straight to
+        keyword matching. Returns the identical [{id, response}] shape.
+        """
+        spec = "\n".join(f"- id={q.get('id')} :: {q.get('text')}" for q in questions)
+        out = await self.chat_json(
+            [
+                {"role": "system", "content": (
+                    "You extract structured clinical facts from a patient's spoken reply to a "
+                    "follow-up call. Answer every question using only what the patient said; "
+                    "never invent details. Keep each response short. "
+                    'Respond with pure JSON and nothing else: {"answers":[{"id":str,"response":str}]}'
+                )},
+                {"role": "user", "content": f"PATIENT REPLY:\n{text[:4000]}\n\nQUESTIONS:\n{spec}"},
+            ],
+            temperature=0.1,
+        )
+        answers = out.get("answers") if isinstance(out, dict) else out
+        return [a for a in (answers or []) if isinstance(a, dict)]
 
     # ---------- Vision document digitization (async job) ----------
 
@@ -314,7 +416,7 @@ def extract_json(raw: str) -> dict | list:
         return json.loads(raw)
     except json.JSONDecodeError:
         pass
-    # last resort: first {...} or [...] region
+    # first {...} or [...] region
     for open_c, close_c in (("{", "}"), ("[", "]")):
         start, end = raw.find(open_c), raw.rfind(close_c)
         if start != -1 and end > start:
@@ -322,7 +424,55 @@ def extract_json(raw: str) -> dict | list:
                 return json.loads(raw[start : end + 1])
             except json.JSONDecodeError:
                 continue
+    repaired = _repair_truncated_json(raw)
+    if repaired is not None:
+        return repaired
     raise SarvamUnavailable(f"LLM did not return parseable JSON: {raw[:200]}")
+
+
+def _repair_truncated_json(raw: str) -> dict | list | None:
+    """Salvage a reply cut off mid-object by closing whatever is still open.
+
+    Reasoning models can exhaust the token budget partway through a long string
+    field; the leading keys are still usable, so close the structure and parse.
+    """
+    start = min((i for i in (raw.find("{"), raw.find("[")) if i != -1), default=-1)
+    if start == -1:
+        return None
+    body = raw[start:]
+
+    stack: list[str] = []
+    in_string = escaped = False
+    for ch in body:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]" and stack:
+            stack.pop()
+
+    candidate = body
+    if in_string:
+        candidate += '"'
+    # drop a dangling key or comma that would make the closed object invalid
+    candidate = candidate.rstrip().rstrip(",")
+    if candidate.rstrip().endswith(":"):
+        candidate = candidate.rstrip()[:-1].rstrip().rstrip(",")
+        if candidate.endswith('"'):
+            candidate = candidate[: candidate.rfind('"', 0, len(candidate) - 1)].rstrip().rstrip(",")
+    candidate += "".join(reversed(stack))
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
 
 
 def guess_mime(filename: str) -> str:

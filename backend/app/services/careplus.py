@@ -228,7 +228,7 @@ async def build_script(kind: str, targets: list[CallTarget], patient: Patient) -
         return await sarvam.chat(
             [{"role": "system", "content": "You write natural, clinically safe voice scripts for patients."},
              {"role": "user", "content": prompt}],
-            temperature=0.5, max_tokens=220,
+            temperature=0.5, max_tokens=2048,
         )
     except SarvamUnavailable:
         return _template_script(kind, med_labels, q_labels, patient)
@@ -250,6 +250,77 @@ def _template_script(kind: str, meds: list[str], qs: list[str], patient: Patient
         f"Hello {patient.name}, this is your care assistant checking in. "
         "Please tell me how you are feeling and whether you have taken your medicines today."
     )
+
+
+async def create_care_call(
+    db: Session, patient: Patient, language: str | None = None, with_script: bool = True
+) -> CallLog:
+    """Build a call and everything the conversation needs to be about something.
+
+    The ad-hoc ScheduledCall gives the call real CallTargets (the medicines due,
+    the doctor's questions), which is what both the streaming agent and the
+    classic recording flow use to know what to ask and what to extract.
+
+    Script generation, translation and TTS run *before* anything is written.
+    SQLite keeps a single writer, so flushing first and awaiting Sarvam
+    afterwards held the write lock for the 10-40s those calls take, and every
+    concurrent write in that window failed with "database is locked".
+    """
+    import time as _time
+    import uuid as _uuid
+
+    plan = patient.care_plan
+    kind = "medicine" if plan and plan.medicines else "manual"
+    sc_kind = "medicine" if kind == "manual" else kind
+    lang = language or patient.preferred_language
+
+    # Built in memory, attached to the session only after the slow work is done.
+    targets = [
+        CallTarget(
+            ref_type="medicine", ref_id=med.id,
+            label=f"{med.name} {med.dose}".strip()
+                  + (f" — {med.instructions}" if med.instructions else ""),
+        )
+        for med in (plan.medicines if plan else [])
+    ]
+
+    # The streaming agent speaks from its own dialogue plan, so the one-shot
+    # script and its audio are only worth the ~20s of Sarvam calls when the
+    # classic play-then-record flow will actually play them.
+    script_en = script_local = audio_path = ""
+    if with_script:
+        script_en = await build_script(sc_kind, targets, patient)
+        script_local = await localize_script(script_en, lang)
+        audio_path = await synthesize(script_local, lang)
+
+    sc = ScheduledCall(
+        care_plan_id=plan.id if plan else None,
+        patient_id=patient.id, kind=sc_kind,
+        due_at=utcnow().replace(tzinfo=None),
+        slot_key=f"p{patient.id}|manual|{int(_time.time())}|{_uuid.uuid4().hex[:6]}",
+        status="pending",
+    )
+    db.add(sc)
+    db.flush()
+    for target in targets:
+        target.scheduled_call_id = sc.id
+        db.add(target)
+
+    call = CallLog(
+        patient_id=patient.id, direction="outbound", kind=sc_kind,
+        script_text=script_en, script_text_translated=script_local,
+        tts_audio_path=audio_path, status="queued",
+        # The language this call is conducted in — an override here must not
+        # rewrite the patient's standing preference.
+        detected_language=lang,
+    )
+    db.add(call)
+    db.flush()
+    sc.call_log_id = call.id
+    sc.status = "placed"
+    sc.attempts = 1
+    db.flush()
+    return call
 
 
 async def localize_script(script_en: str, language: str) -> str:
@@ -313,7 +384,9 @@ async def process_reply(
     # english mirror for doctors / analytics
     if call.transcript and call.detected_language.split("-")[0] != "en":
         try:
-            call.transcript_english = await sarvam.translate(call.transcript, "en-IN", call.detected_language or "auto")
+            call.transcript_english = await sarvam.translate(
+                call.transcript, "en-IN", call.detected_language or patient.preferred_language,
+            )
         except SarvamUnavailable:
             call.transcript_english = ""
     else:
@@ -459,7 +532,13 @@ async def _extract_structured(
         answers = await sarvam.text_analytics(text, questions)
         return _shape_analytics(answers, text)
     except SarvamUnavailable as e:
-        logger.warning("text-analytics unavailable (%s); keyword fallback", e)
+        logger.warning("text-analytics unavailable (%s); trying LLM extraction", e)
+
+    try:
+        answers = await sarvam.text_analytics_llm(text, questions)
+        return _shape_analytics(answers, text)
+    except SarvamUnavailable as e:
+        logger.warning("LLM extraction unavailable (%s); keyword fallback", e)
         return _keyword_extract(text, med_targets)
 
 

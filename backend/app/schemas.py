@@ -30,7 +30,11 @@ class PatientCreate(BaseModel):
         cleaned = re.sub(r"[\s\-()]", "", v)
         if not re.match(r"^\+?\d{5,15}$", cleaned):
             raise ValueError("phone must be 5-15 digits, optionally prefixed with +")
-        return cleaned
+        # Stored in E.164 so a number is dialable the moment it is saved —
+        # Twilio rejects anything else with error 21211.
+        from .services.telephony import to_e164
+
+        return to_e164(cleaned)
 
     @field_validator("timezone")
     @classmethod
@@ -246,6 +250,21 @@ class ExtractedResponseOut(ORMModel):
     value_type: str
 
 
+class CallTurnOut(ORMModel):
+    id: int
+    turn_index: int
+    role: str
+    step_key: str
+    text: str
+    text_english: str
+    audio_path: str
+    language: str
+    stt_confidence: float
+    latency_ms: int
+    barge_in: bool
+    started_at: datetime
+
+
 class CallLogOut(ORMModel):
     id: int
     patient_id: int
@@ -261,14 +280,17 @@ class CallLogOut(ORMModel):
     transcript_english: str
     detected_language: str
     language_confidence: float
+    error_message: str = ""
     created_at: datetime
     responses: list[ExtractedResponseOut] = []
+    turns: list[CallTurnOut] = []
 
 
 class CallCreateOut(BaseModel):
     call: CallLogOut
     tts_audio_url: str | None = None
     escalation_id: int | None = None
+    stream_url: str | None = None
 
 
 class ReplyProcessOut(BaseModel):

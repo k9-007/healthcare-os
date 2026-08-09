@@ -1,5 +1,4 @@
 import time
-import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import select
@@ -7,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..db import get_db
-from ..models import CallLog, CallTarget, CareEvent, Patient, ScheduledCall, utcnow
+from ..models import CallLog, CareEvent, Patient, ScheduledCall
 from ..schemas import CallCreateOut, CallLogOut, DoctorReplyIn, ReplyProcessOut
 from ..services import careplus, telephony
 
@@ -28,46 +27,24 @@ async def trigger_call(patient_id: int, db: Session = Depends(get_db)):
     if not patient:
         raise HTTPException(404, "patient not found")
 
-    plan = patient.care_plan
-    kind = "medicine" if plan and plan.medicines else "manual"
-
-    # ad-hoc scheduled call so reply processing has real targets
-    sc = ScheduledCall(
-        care_plan_id=plan.id if plan else None,
-        patient_id=patient.id, kind=kind if kind != "manual" else "medicine",
-        due_at=utcnow().replace(tzinfo=None),
-        slot_key=f"p{patient.id}|manual|{int(time.time())}|{uuid.uuid4().hex[:6]}",
-        status="pending",
-    )
-    db.add(sc)
-    db.flush()
-    if plan:
-        for med in plan.medicines:
-            label = f"{med.name} {med.dose}".strip() + (f" — {med.instructions}" if med.instructions else "")
-            db.add(CallTarget(scheduled_call_id=sc.id, ref_type="medicine", ref_id=med.id, label=label))
-    db.flush()
-
-    targets = list(sc.targets)
-    script_en = await careplus.build_script(sc.kind, targets, patient)
-    script_local = await careplus.localize_script(script_en, patient.preferred_language)
-    audio_path = await careplus.synthesize(script_local, patient.preferred_language)
-
-    call = CallLog(
-        patient_id=patient.id, direction="outbound", kind=sc.kind,
-        script_text=script_en, script_text_translated=script_local,
-        tts_audio_path=audio_path, status="queued",
-    )
-    db.add(call)
-    db.flush()
-    sc.call_log_id = call.id
-    sc.status = "placed"
-    sc.attempts = 1
+    call = await careplus.create_care_call(db, patient)
+    sc = db.scalar(select(ScheduledCall).where(ScheduledCall.call_log_id == call.id))
+    targets = list(sc.targets) if sc else []
+    # Release the SQLite write lock before the carrier round-trip; place_call
+    # blocks on the network and nothing else can write until it returns.
+    db.commit()
 
     try:
         telephony.place_call(call, patient.phone)
     except telephony.TelephonyError as e:
+        # A call that never reached the patient must read as failed everywhere,
+        # not sit forever on "waiting for the patient's reply".
+        db.add(CareEvent(
+            patient_id=patient.id, type="call", severity="warning",
+            title="Care call could not be placed", detail=str(e)[:400],
+        ))
         db.commit()
-        raise HTTPException(502, f"telephony failed: {e}")
+        raise HTTPException(502, str(e))
 
     db.add(CareEvent(
         patient_id=patient.id, type="call", severity="info",
@@ -76,7 +53,11 @@ async def trigger_call(patient_id: int, db: Session = Depends(get_db)):
     ))
     db.commit()
     db.refresh(call)
-    return CallCreateOut(call=CallLogOut.model_validate(call), tts_audio_url=_audio_url(call))
+    return CallCreateOut(
+        call=CallLogOut.model_validate(call),
+        tts_audio_url=_audio_url(call),
+        stream_url=_stream_url(call),
+    )
 
 
 @router.get("/calls/{call_id}", response_model=CallLogOut)
@@ -180,10 +161,22 @@ async def doctor_reply(patient_id: int, payload: DoctorReplyIn, db: Session = De
             esc.status = "ack"
     db.commit()
     db.refresh(call)
-    return CallCreateOut(call=CallLogOut.model_validate(call), tts_audio_url=_audio_url(call))
+    return CallCreateOut(
+        call=CallLogOut.model_validate(call),
+        tts_audio_url=_audio_url(call),
+        stream_url=_stream_url(call),
+    )
 
 
 def _audio_url(call: CallLog) -> str | None:
     if not call.tts_audio_path:
         return None
     return f"{get_settings().public_base_url}/data/{call.tts_audio_path}"
+
+
+def _stream_url(call: CallLog) -> str | None:
+    """WebSocket the operator console connects to in order to hold the
+    conversation in the browser — the same agent a phone call gets."""
+    if get_settings().voice_mode != "stream":
+        return None
+    return f"{get_settings().public_ws_base_url}/ws/voice/browser/{call.id}"

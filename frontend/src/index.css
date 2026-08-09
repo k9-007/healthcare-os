@@ -1,0 +1,137 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Instrument Serif", ui-serif, Georgia, serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+/* Color tokens resolve to runtime variables so the theme can flip via html.light. */
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-panel: var(--panel);
+  --color-raised: var(--raised);
+  --color-hover: var(--hover);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+
+  --color-bright: var(--bright);
+  --color-fog: var(--fog);
+  --color-mist: var(--mist);
+  --color-faint: var(--faint);
+
+  --color-accent: var(--accent);
+  --color-accent-dim: var(--accent-dim);
+  --color-violet: var(--violet);
+
+  --color-good: var(--good);
+  --color-warn: var(--warn);
+  --color-crit: var(--crit);
+}
+
+/* dark clinical palette (default) */
+:root {
+  --canvas: #090e1a;
+  --panel: #0d1424;
+  --raised: #121b30;
+  --hover: #16213a;
+  --line: #1c2740;
+  --line-strong: #283757;
+
+  --bright: #e9eefa;
+  --fog: #aebbd6;
+  --mist: #6d7fa3;
+  --faint: #47567a;
+
+  --accent: #45d0c0;
+  --accent-dim: #1d4f4c;
+  --violet: #a48ffb;
+
+  --good: #34d399;
+  --warn: #fbbf24;
+  --crit: #f87171;
+
+  color-scheme: dark;
+}
+
+/* light clinical palette */
+html.light {
+  --canvas: #f2f5fa;
+  --panel: #ffffff;
+  --raised: #e9edf6;
+  --hover: #e1e7f2;
+  --line: #dfe5f0;
+  --line-strong: #c4cfe2;
+
+  --bright: #131c31;
+  --fog: #3c4b6b;
+  --mist: #67769a;
+  --faint: #9aa7c2;
+
+  --accent: #0f9a8c;
+  --accent-dim: #c6ebe6;
+  --violet: #7857f2;
+
+  --good: #0d9f6e;
+  --warn: #c17f10;
+  --crit: #dc3b3b;
+
+  color-scheme: light;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-canvas);
+  color: var(--color-fog);
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  letter-spacing: 0.01em;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+/* thin scrollbars that match the theme */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-strong) transparent;
+}
+
+@utility label-caps {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--color-mist);
+}
+
+@utility num {
+  font-variant-numeric: tabular-nums;
+}
+
+@utility panel {
+  background: var(--color-panel);
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+}
+
+@utility focus-ring {
+  &:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+  }
+}
+
+@keyframes pulse-crit {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--crit) 35%, transparent); }
+  50% { box-shadow: 0 0 0 5px transparent; }
+}
+
+@utility pulse-crit {
+  animation: pulse-crit 2s ease-in-out infinite;
+}

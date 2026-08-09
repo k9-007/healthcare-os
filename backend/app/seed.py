@@ -57,7 +57,7 @@ def seed_if_empty(db: Session) -> bool:
     logger.info("seeding demo data")
 
     sharma = Patient(
-        name="Anita Sharma", age=58, sex="F", phone="+919876543210", preferred_language="hi-IN",
+        name="Anita Sharma", age=58, sex="F", phone="+916355351675", preferred_language="hi-IN",
         timezone="Asia/Kolkata", diagnosis="Type 2 Diabetes + Hypertension",
         family_contact="+919876500000 (son, Rohit)",
         notes="58F, discharged after glycemic control admission.",

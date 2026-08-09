@@ -1,6 +1,6 @@
 from datetime import date, datetime, timezone
 
-from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -168,12 +168,44 @@ class CallLog(Base):
     detected_language: Mapped[str] = mapped_column(String(16), default="")
     language_confidence: Mapped[float] = mapped_column(Float, default=0.0)
     twilio_sid: Mapped[str] = mapped_column(String(64), default="")
+    # Why a call never reached the patient, in words the console can show.
+    error_message: Mapped[str] = mapped_column(String(500), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     patient: Mapped["Patient"] = relationship(back_populates="call_logs")
     responses: Mapped[list["ExtractedResponse"]] = relationship(
         back_populates="call_log", cascade="all, delete-orphan"
     )
+    turns: Mapped[list["CallTurn"]] = relationship(
+        back_populates="call_log", cascade="all, delete-orphan",
+        order_by="CallTurn.turn_index",
+    )
+
+
+class CallTurn(Base):
+    """One utterance in a live conversation — the nurse's or the patient's.
+
+    Recorded per turn (not per call) so a conversation is inspectable and
+    replayable, and so per-turn latency is measurable rather than claimed.
+    """
+
+    __tablename__ = "call_turns"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    call_log_id: Mapped[int] = mapped_column(ForeignKey("call_logs.id"))
+    turn_index: Mapped[int] = mapped_column(Integer, default=0)
+    role: Mapped[str] = mapped_column(String(16))  # nurse|patient
+    step_key: Mapped[str] = mapped_column(String(64), default="")  # greeting|med:<id>|q:<id>|…
+    text: Mapped[str] = mapped_column(Text, default="")
+    text_english: Mapped[str] = mapped_column(Text, default="")
+    audio_path: Mapped[str] = mapped_column(String(500), default="")
+    language: Mapped[str] = mapped_column(String(16), default="")
+    stt_confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    barge_in: Mapped[bool] = mapped_column(Boolean, default=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    call_log: Mapped["CallLog"] = relationship(back_populates="turns")
 
 
 class ExtractedResponse(Base):

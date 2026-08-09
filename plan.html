@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>HealthcareOS — Full Technical Plan</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  window.__mermaid = mermaid;
+</script>
+<style>
+  :root{
+    --bg:#0b1220; --panel:#111a2e; --panel2:#0e1728; --border:#22304d;
+    --text:#e6ecf7; --muted:#93a4c3; --accent:#38bdf8; --accent2:#22d3ee;
+    --good:#34d399; --warn:#fbbf24; --bad:#f87171; --brand:#7c3aed;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:15px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .app{display:grid;grid-template-columns:280px 1fr;min-height:100vh}
+  /* Sidebar */
+  aside{position:sticky;top:0;height:100vh;overflow:auto;border-right:1px solid var(--border);
+    background:linear-gradient(180deg,#0d1526,#0b1220);padding:22px 18px}
+  .logo{display:flex;align-items:center;gap:10px;font-weight:800;font-size:18px;letter-spacing:.3px}
+  .logo .dot{width:12px;height:12px;border-radius:50%;background:radial-gradient(circle at 30% 30%,var(--accent2),var(--brand));box-shadow:0 0 14px var(--accent)}
+  .tag{margin:6px 0 18px;color:var(--muted);font-size:12px}
+  nav a{display:block;color:var(--muted);text-decoration:none;padding:6px 10px;border-radius:8px;font-size:13.5px}
+  nav a:hover{background:var(--panel);color:var(--text)}
+  nav a.h3{padding-left:22px;font-size:12.5px;opacity:.85}
+  /* Content */
+  main{max-width:1080px;padding:38px 46px 90px}
+  .hero{background:linear-gradient(135deg,rgba(124,58,237,.18),rgba(56,189,248,.12));
+    border:1px solid var(--border);border-radius:18px;padding:26px 28px;margin-bottom:28px}
+  .hero h1{margin:0 0 6px;font-size:30px}
+  .pill{display:inline-block;background:var(--panel);border:1px solid var(--border);color:var(--accent2);
+    padding:3px 10px;border-radius:999px;font-size:12px;margin-right:6px}
+  h1,h2,h3{scroll-margin-top:20px;line-height:1.25}
+  h2{margin-top:40px;padding-bottom:8px;border-bottom:1px solid var(--border);font-size:23px}
+  h3{margin-top:26px;font-size:18px;color:#cbd8f2}
+  p{color:#d6deee}
+  a{color:var(--accent)}
+  code{background:#0a1424;border:1px solid var(--border);border-radius:6px;padding:1px 6px;font-size:13px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#9fe7ff}
+  pre code{display:block;padding:14px;overflow:auto}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px;
+    background:var(--panel2);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+  th,td{padding:9px 12px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}
+  th{background:#0f1b32;color:#bcd0f2;font-weight:700}
+  tr:last-child td{border-bottom:none}
+  td code{white-space:nowrap}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+    background:rgba(56,189,248,.07);border-radius:0 10px 10px 0;color:#cfe3f5}
+  .mermaid{background:var(--panel2);border:1px solid var(--border);border-radius:14px;
+    padding:18px;margin:18px 0;overflow:auto;text-align:center}
+  hr{border:none;border-top:1px solid var(--border);margin:34px 0}
+  .footnote{color:var(--muted);font-size:12.5px;margin-top:40px}
+  ::selection{background:rgba(124,58,237,.4)}
+  aside::-webkit-scrollbar,main ::-webkit-scrollbar{width:9px;height:9px}
+  aside::-webkit-scrollbar-thumb,main ::-webkit-scrollbar-thumb{background:#25344f;border-radius:9px}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <div class="logo"><span class="dot"></span> HealthcareOS</div>
+    <div class="tag">AI Care Coordination Layer · Sarvam Hackathon</div>
+    <nav id="toc"></nav>
+  </aside>
+  <main>
+    <div class="hero">
+      <h1>HealthcareOS — Full Technical Plan</h1>
+      <p>Two flagship modules, one closed loop: <b>Brain</b> (cited clinical knowledge) + <b>Patient Care+</b> (autonomous multilingual voice follow-up).</p>
+      <div>
+        <span class="pill">FastAPI</span><span class="pill">React + Vite</span>
+        <span class="pill">Twilio + Simulation</span><span class="pill">SQLite</span>
+        <span class="pill">Multi-language</span><span class="pill">Full Sarvam stack</span>
+      </div>
+    </div>
+    <div id="content"></div>
+    <p class="footnote">Diagrams rendered with Mermaid. Source of truth: <code>plan.md</code>.</p>
+  </main>
+</div>
+
+<script id="md" type="text/markdown">
+## 1. Locked decisions
+
+| Decision | Choice |
+|---|---|
+| Backend | **Python + FastAPI** |
+| Frontend | **React + Vite + TypeScript + Tailwind** |
+| Calls | **Real telephony via Twilio** (turn-based IVR) + **simulation fallback** |
+| Scope | **Brain + Patient Care+ + Care Graph + light Analytics** |
+| Languages | **Live multi-language** (Hindi, Tamil, Kannada, Marathi, English, …) |
+| Storage | **SQLite** via SQLAlchemy |
+
+## 2. The full Sarvam stack
+
+Base URL `https://api.sarvam.ai` · Auth header `api-subscription-key`.
+
+| Capability | Endpoint | Model | Used by |
+|---|---|---|---|
+| Document intelligence (PDF/img → md/json, 23 langs, tables) | `/doc-digitization/job/v1` | Sarvam Vision (3B VLM) | Brain ingestion |
+| Chat / reasoning / summaries | `/v1/chat/completions` | `sarvam-105b` | Brain answers, script gen, summaries |
+| Text → speech (11 langs, 38 voices) | `/text-to-speech` | `bulbul:v3` | Patient calls, callbacks |
+| Speech → text (23 langs, auto-detect, 5 modes) | `/speech-to-text` | `saaras:v3` | Patient replies |
+| Long audio STT (diarization, timestamps) | `/speech-to-text/job/init` | `saaras:v3` | Long recordings |
+| Structured extraction (typed Q&A) | `/text-analytics` | — | Transcript → symptom fields |
+| Translation (EN ↔ 22 Indic) | `/translate` | `mayura:v1` / `sarvam-translate:v1` | Doctor↔patient language |
+| Language identification | `/text-lid` | — | Routing / detection |
+| Transliteration | `/transliterate` | — | Display aids |
+
+**Voices (subset of 38):** warm female `priya`,`neha`,`pooja`; professional male `aditya`,`rahul`,`kabir`; calm anchor `shreya`,`kavya`,`ritu`; authoritative `vijay`,`gokul`,`anand`; young `tanya`,`suhani`,`niharika`.
+
+> **Build-time:** Sarvam MCP `sarvam_code_*` for shapes/snippets/validate; `sarvam_tools_*` to live-test STT/TTS/translate/vision/analytics before wiring into the backend.
+
+## 3. High-level architecture
+
+```mermaid
+flowchart LR
+  subgraph Client["React SPA"]
+    UI_Dash["Dashboard / Analytics"]
+    UI_Pat["Patient + Care Plan"]
+    UI_Brain["Brain Chat"]
+    UI_Graph["Care Graph"]
+    UI_Call["Call Panel"]
+  end
+  subgraph API["FastAPI Backend"]
+    R1["Routers"]
+    S1["sarvam.py"]
+    S2["brain.py"]
+    S3["telephony.py"]
+    S4["careplus.py"]
+    DB[("SQLite")]
+    FS[["/data audio+uploads"]]
+  end
+  subgraph Sarvam["Sarvam API"]
+    V["Vision"]
+    L["LLM 105b"]
+    T["TTS"]
+    ST["STT"]
+    TA["Text Analytics"]
+    TR["Translate"]
+    LID["LID"]
+  end
+  Twilio["Twilio Voice"]
+  Phone["Patient Phone"]
+  Client -->|HTTP| R1
+  R1 --> S1 & S2 & S3 & S4
+  S2 --> DB
+  S4 --> DB
+  R1 --> DB
+  S1 --> V & L & T & ST & TA & TR & LID
+  S3 --> Twilio
+  Twilio <-->|audio| Phone
+  Twilio -->|webhooks| R1
+  S1 --> FS
+  Client -->|playback/mic| FS
+```
+
+## 4. Module flows
+
+### 4.1 Brain — ingest & cited retrieval
+
+```mermaid
+flowchart TD
+  A["Upload PDF/img"] --> B["POST /documents"]
+  B --> C["Sarvam Vision job"]
+  C --> D["Extracted Markdown"]
+  D --> E["Chunk + store DocChunk"]
+  E --> F["Index (BM25)"]
+  G["POST /brain/ask"] --> H["Retrieve top-k"]
+  F --> H
+  H --> I["sarvam-105b cite-or-refuse"]
+  I --> J["Answer + citations + confidence"]
+  J --> K["UI renders w/ sources"]
+```
+
+### 4.2 Patient Care+ — autonomous voice follow-up
+
+```mermaid
+flowchart TD
+  A["Build Care Plan"] --> B["Enable Patient Care+"]
+  B --> C["sarvam-105b drafts script"]
+  C --> D["Translate → patient language"]
+  D --> E["TTS bulbul:v3 → WAV"]
+  E --> F{"TELEPHONY_MODE"}
+  F -->|twilio| G["Twilio IVR play/record"]
+  F -->|simulation| H["Browser play + mic record"]
+  G --> I["Reply audio"]
+  H --> I
+  I --> J["STT saaras:v3"]
+  J --> K["Text Analytics → structured"]
+  K --> L["Persist CallLog + responses"]
+  L --> M["Emit CareEvents"]
+  M --> N{"urgency high?"}
+  N -->|yes| O["Escalation + nurse alert"]
+  N -->|no| P["Update adherence trend"]
+```
+
+### 4.3 Care Graph — explainable journey
+
+```mermaid
+flowchart LR
+  D["Discharge"] --> M["Medicine started"] --> C1["Day-2 call"]
+  C1 --> MD["Missed dose"] --> AL["Doctor alert"]
+  AL --> AD["Advice sent"] --> S["Symptoms improved"] --> R["Recovered"]
+```
+
+### 4.4 Analytics — hospital view
+
+```mermaid
+flowchart TD
+  CE["CareEvents + CallLogs + Responses"] --> AGG["GET /analytics/summary"]
+  AGG --> T1["Adherence %"]
+  AGG --> T2["Missed doses"]
+  AGG --> T3["Patients at risk"]
+  AGG --> T4["Escalations"]
+  AGG --> T5["Follow-up completion"]
+  AGG --> T6["Call success rate"]
+```
+
+## 5. User flow diagrams
+
+### 5.1 Doctor journey
+
+```mermaid
+journey
+  title Doctor journey
+  section Setup
+    Upload documents to Brain: 4: Doctor
+    Create patient + care plan: 4: Doctor
+  section Engage
+    Enable Patient Care+: 5: Doctor
+    Review call summaries: 4: Doctor
+  section Decide
+    Ask Brain (cited): 5: Doctor
+    Send reply → auto callback: 5: Doctor
+```
+
+### 5.2 Patient call journey (turn-based)
+
+```mermaid
+sequenceDiagram
+  actor P as Patient
+  participant TW as Twilio
+  participant API as FastAPI
+  participant SV as Sarvam
+  API->>SV: TTS(script, lang) → WAV
+  API->>TW: place call
+  TW->>P: rings + Play TTS
+  P-->>TW: speaks reply
+  TW->>API: recording webhook
+  API->>SV: STT → transcript+lang
+  API->>SV: Text Analytics → fields
+  API->>API: persist + escalation?
+  API-->>P: callback (if queued)
+```
+
+## 6. Closed-loop sequence (demo backbone)
+
+```mermaid
+sequenceDiagram
+  actor Doc as Doctor
+  participant FE as React
+  participant BE as FastAPI
+  participant SV as Sarvam
+  participant TW as Twilio
+  actor Pat as Patient
+  Doc->>FE: Upload discharge PDF
+  FE->>BE: POST /documents
+  BE->>SV: Vision extract → md
+  BE-->>FE: indexed
+  Doc->>FE: Build care plan
+  FE->>BE: POST /care-plan
+  Doc->>FE: Enable Patient Care+
+  FE->>BE: POST /call
+  BE->>SV: LLM → Translate → TTS
+  BE->>TW: outbound call
+  TW->>Pat: Hindi voice call
+  Pat-->>TW: reply
+  TW->>BE: recording webhook
+  BE->>SV: STT → Text Analytics
+  BE-->>FE: transcript + Care Graph
+  Doc->>FE: Ask Brain missed meds?
+  FE->>BE: POST /brain/ask
+  BE->>SV: retrieve + 105b (cited)
+  BE-->>FE: answer + citations
+  Doc->>FE: Reply after dinner
+  FE->>BE: doctor reply
+  BE->>SV: Translate → TTS
+  BE->>TW: callback
+  TW->>Pat: Hindi callback
+```
+
+## 7. Database schema (ERD)
+
+```mermaid
+erDiagram
+  PATIENT ||--o{ DOCUMENT : has
+  PATIENT ||--o| CAREPLAN : has
+  PATIENT ||--o{ CALLLOG : has
+  PATIENT ||--o{ CAREEVENT : has
+  PATIENT ||--o{ ESCALATION : has
+  DOCUMENT ||--o{ DOCCHUNK : split_into
+  CAREPLAN ||--o{ MEDICINE : contains
+  CAREPLAN ||--o{ FOLLOWUPQUESTION : contains
+  CALLLOG ||--o{ EXTRACTEDRESPONSE : yields
+  CALLLOG ||--o| ESCALATION : may_raise
+  FOLLOWUPQUESTION ||--o{ EXTRACTEDRESPONSE : answered_by
+  PATIENT {
+    int id PK
+    string name
+    string phone
+    string preferred_language
+    string diagnosis
+    string family_contact
+    datetime created_at
+  }
+  DOCUMENT {
+    int id PK
+    int patient_id FK
+    string title
+    string type
+    string file_path
+    text extracted_md
+    string status
+  }
+  DOCCHUNK {
+    int id PK
+    int document_id FK
+    int ordinal
+    int page
+    text text
+  }
+  CAREPLAN {
+    int id PK
+    int patient_id FK
+    string status
+    datetime created_at
+  }
+  MEDICINE {
+    int id PK
+    int care_plan_id FK
+    string name
+    string dose
+    string schedule
+  }
+  FOLLOWUPQUESTION {
+    int id PK
+    int care_plan_id FK
+    text text
+    string type
+    string options
+    int ask_after_days
+  }
+  CALLLOG {
+    int id PK
+    int patient_id FK
+    string direction
+    string mode
+    string status
+    text script_text
+    string tts_audio_path
+    string recording_path
+    text transcript
+    string detected_language
+    float language_confidence
+    datetime created_at
+  }
+  EXTRACTEDRESPONSE {
+    int id PK
+    int call_log_id FK
+    int question_id FK
+    string key
+    string value
+    string value_type
+  }
+  CAREEVENT {
+    int id PK
+    int patient_id FK
+    datetime ts
+    string type
+    string title
+    text detail
+    string severity
+  }
+  ESCALATION {
+    int id PK
+    int patient_id FK
+    int call_log_id FK
+    string reason
+    string urgency
+    string status
+    datetime created_at
+  }
+```
+
+## 8. API surface & flows
+
+### 8.1 Endpoint catalog
+
+| Method | Path | Purpose | Sarvam |
+|---|---|---|---|
+| POST | `/patients` | Create patient | — |
+| GET | `/patients` · `/patients/{id}` | List / detail | — |
+| POST | `/patients/{id}/care-plan` | Create/update plan | — |
+| GET | `/patients/{id}/care-plan` | Get plan | — |
+| POST | `/documents` | Upload → extract → index | Vision |
+| GET | `/documents` · `/documents/{id}` | List / detail | — |
+| POST | `/brain/ask` | Cited Q&A | LLM |
+| POST | `/patients/{id}/call` | Script→translate→TTS→call | LLM,Translate,TTS |
+| POST | `/calls/{id}/simulate-reply` | Reply audio→STT→analytics | STT,Analytics |
+| POST | `/patients/{id}/reply` | Doctor reply→TTS callback | Translate,TTS |
+| GET | `/patients/{id}/timeline` | Care Graph events | — |
+| GET | `/analytics/summary` | Hospital KPIs | — |
+| POST | `/twilio/voice/{id}` | TwiML play+record | — |
+| POST | `/twilio/recording/{id}` | Recording→STT→analytics | STT,Analytics |
+| POST | `/twilio/status/{id}` | Call status | — |
+
+### 8.2 Brain ask — request flow
+
+```mermaid
+sequenceDiagram
+  participant FE as React
+  participant BE as /brain/ask
+  participant IDX as Chunk index
+  participant LLM as sarvam-105b
+  FE->>BE: { question }
+  BE->>IDX: retrieve top-k (BM25)
+  IDX-->>BE: chunks[]
+  BE->>LLM: cite-or-refuse + context
+  LLM-->>BE: answer with [n]
+  BE-->>FE: answer + citations + confidence
+```
+
+### 8.3 Document ingestion — Vision job pipeline
+
+```mermaid
+sequenceDiagram
+  participant BE as /documents
+  participant V as Sarvam Vision
+  BE->>V: POST job {lang, format}
+  V-->>BE: job_id + upload URL
+  BE->>V: PUT file (presigned)
+  BE->>V: POST start
+  loop poll
+    BE->>V: GET status
+    V-->>BE: state
+  end
+  V-->>BE: Completed → md ZIP
+  BE->>BE: unzip, chunk, store
+```
+
+## 9. Telephony design (Twilio IVR)
+
+```mermaid
+sequenceDiagram
+  participant BE as FastAPI
+  participant TW as Twilio
+  actor P as Patient
+  BE->>TW: calls.create(url=/twilio/voice/{id})
+  TW->>BE: POST /twilio/voice/{id}
+  BE-->>TW: TwiML Play tts + Record
+  TW->>P: play + record
+  P-->>TW: audio
+  TW->>BE: POST /twilio/recording/{id}
+  BE->>BE: download → STT → Analytics
+  TW->>BE: POST /twilio/status/{id}
+```
+
+> **Prereqs for real calls:** Twilio SID/token + voice number; **ngrok** → `PUBLIC_BASE_URL`. Trial dials only verified numbers; +91 has limits → consider **Exotel**. Default `TELEPHONY_MODE=simulation`.
+
+## 10. Repo layout
+
+```
+healthcare-os/
+├── plan.md · plan.html · README.md
+├── backend/
+│   ├── requirements.txt · .env.example
+│   └── app/
+│       ├── main.py · config.py · db.py · models.py · schemas.py · seed.py
+│       ├── services/  sarvam.py · brain.py · telephony.py · careplus.py
+│       └── routers/   patients · careplans · documents · brain · calls · analytics
+└── frontend/src/
+    ├── api/client.ts · lib/languages.ts · lib/audio.ts
+    ├── pages/ Dashboard · Patients · PatientDetail · Brain
+    └── components/ CarePlanBuilder · CareGraph · CallPanel · BrainChat · Tiles
+```
+
+## 11. Phased build plan (~8–10 hrs)
+
+| Phase | Work | Est. |
+|---|---|---|
+| 0 | Scaffold FastAPI + Vite React, SQLite, CORS, static | 45m |
+| 1 | `sarvam.py` wrappers + smoke-test via MCP | 1h |
+| 2 | Brain: upload → Vision → index → cited Q&A + chat UI | 2h |
+| 3 | Care+: care-plan builder → script → TTS; STT → analytics → escalation | 2.5h |
+| 4 | Telephony: Twilio call + TwiML + recording→STT; simulation | 1.5h |
+| 5 | Care Graph timeline + Analytics dashboard | 1.5h |
+| 6 | Close loop + multi-language + polish | 1.5h |
+| 7 | Seed data, UI pass, README + demo script + Twilio/ngrok docs | 45m |
+
+## 12. Risks & mitigations
+
+| Risk | Mitigation |
+|---|---|
+| Live call fails on stage | Simulation mode + pre-recorded reply clip |
+| Vision job latency | Pre-ingest demo docs; text/markdown fallback |
+| STT wrong language | Pass `preferred_language` hint; show detected + confidence |
+| TTS 500-char limit | Chunk scripts; keep short |
+| Rate limits mid-demo | Cache/pre-generate audio; retry backoff |
+| Scope creep | Freeze to 4 modules |
+
+## 13. Demo script (3 min)
+
+1. Upload discharge summary → Brain ingests (Vision).
+2. Care plan (Metformin + 3 Qs), lang = Hindi → Enable Patient Care+.
+3. Call fires → Hindi TTS (Bulbul + Translate).
+4. Patient replies in Hindi → transcript + structured symptoms; 2nd patient in Tamil → **live multi-language** (Saaras + Analytics + LID).
+5. "Severe chest pain" → red escalation on dashboard + Care Graph.
+6. Ask Brain "missed meds this week?" → cited answer.
+7. Doctor replies → automated Hindi callback. **Loop closed.**
+
+## 14. To start building
+
+1. Approve plan → scaffold Phase 0.
+2. Twilio creds **or** start in **simulation**.
+3. Sample clinical PDFs, or I generate dummies.
+4. Demo languages beyond Hindi.
+
+## 15. End-to-end journey — from patient to hospital
+
+Full lifecycle of one patient (Mrs. Sharma, diabetic, Hindi-speaking) — how **every feature and Sarvam capability** is used, from bedside to hospital boardroom.
+
+### 15.1 The journey at a glance (swimlanes)
+
+```mermaid
+flowchart TB
+  subgraph PT["Patient (Mrs. Sharma)"]
+    P1["Discharged after treatment"]
+    P2["Receives Hindi voice call"]
+    P3["Answers: medicine / symptoms"]
+    P4["Reports severe chest pain"]
+    P5["Gets doctor advice as a call"]
+    P6["Recovers"]
+  end
+  subgraph HOS["HealthcareOS"]
+    H1["Vision extracts discharge → Brain"]
+    H2["Care plan → LLM script → Translate → TTS"]
+    H3["Twilio/sim call → STT → Text Analytics"]
+    H4["Structured data → Care Graph + adherence"]
+    H5["Urgency classifier → Escalation"]
+    H6["Doctor reply → Translate → TTS callback"]
+    H7["Aggregate KPIs → Analytics"]
+  end
+  subgraph DR["Doctor / Nurse"]
+    D1["Builds care plan + questions"]
+    D2["Reviews summaries + Care Graph"]
+    D3["Asks Brain (cited)"]
+    D4["Gets escalation, responds"]
+  end
+  subgraph ADM["Hospital Admin"]
+    A1["Adherence, risk, escalations, trends"]
+    A2["Population insight → ops decisions"]
+  end
+  P1 --> H1 --> D1 --> H2 --> P2 --> P3 --> H3 --> H4 --> D2
+  P4 --> H3
+  H4 --> H5 --> D4 --> H6 --> P5 --> P6
+  D2 --> D3
+  H4 --> H7 --> A1 --> A2
+```
+
+### 15.2 Stage-by-stage — every feature mapped
+
+| # | Stage | Actor | Feature / module | Sarvam | Output |
+|---|---|---|---|---|---|
+| 1 | Admission & discharge | Hospital | Upload → **Brain** ingestion | Vision | Cited, searchable records |
+| 2 | Knowledge grounding | Doctor | Brain indexes SOPs/guidelines | Vision + index | Hospital evidence base |
+| 3 | Care plan design | Doctor | Care Plan builder | — | Structured plan + language |
+| 4 | Activation | HealthcareOS | Enable Care+ → script gen | LLM 105b | Safe call script |
+| 5 | Localization | HealthcareOS | Script → patient language | Translate | Hindi/Tamil script |
+| 6 | Voice call | Patient | Medicine call | TTS + Twilio | Natural spoken call |
+| 7 | Listening | Patient | Patient answers by voice | STT (auto-detect) | Transcript + language |
+| 8 | Understanding | HealthcareOS | Transcript → fields | Text Analytics | took_medicine, symptoms, pain, urgency |
+| 9 | Adherence | HealthcareOS | Missed-dose detection | — | Adherence %, caregiver notify |
+| 10 | Symptom follow-up | Patient | Dynamic doctor questions | TTS+STT+Analytics | Symptom timeline |
+| 11 | Care Graph | Doctor | Explainable journey | — | Discharge→…→recovered |
+| 12 | Escalation | Nurse | Urgency of chest pain | LLM + Analytics | Red alert + guidance |
+| 13 | Doctor Q&A | Doctor | Brain over transcripts | LLM (cited) | "Missed 2 doses" + citations |
+| 14 | Closed loop | Patient | Reply → callback | Translate+TTS+Twilio | Hindi advice call |
+| 15 | Multi-language | Any | Same loop in many langs | LID+STT+Translate+TTS | One platform, many languages |
+| 16 | Recovery | Patient | Journey complete | — | `recovered` event |
+| 17 | Hospital intelligence | Admin | Analytics dashboard | — | Adherence, risk, escalations, trends |
+
+### 15.3 Value at each level
+
+```mermaid
+flowchart LR
+  subgraph Patient
+    PV["Care in own language<br/>No app / literacy barrier<br/>Feels heard, safer at home"]
+  end
+  subgraph Doctor
+    DV["No manual follow-up calls<br/>Structured data not audio<br/>Cited, trustworthy answers"]
+  end
+  subgraph Hospital
+    HV["Higher adherence, fewer readmits<br/>Early risk detection<br/>Population insight"]
+  end
+  PV --> DV --> HV
+```
+
+### 15.4 One sentence for the judges
+
+> A patient is discharged, and from that moment HealthcareOS **reads their records (Vision)**, **plans and speaks to them in their language (LLM + Translate + TTS)**, **listens and understands their replies (STT + Text Analytics)**, **draws their recovery as an explainable Care Graph**, **escalates danger instantly**, **lets the doctor answer with cited evidence (Brain)**, **closes the loop with an automated callback**, and **rolls it all into hospital-wide intelligence** — the entire arc from a single bedside to the hospital boardroom, powered end-to-end by Sarvam.
+</script>
+
+<script type="module">
+  const mermaid = window.__mermaid || (await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs')).default;
+  mermaid.initialize({
+    startOnLoad:false, theme:'dark', securityLevel:'loose',
+    themeVariables:{
+      background:'#0e1728', primaryColor:'#16233d', primaryBorderColor:'#38bdf8',
+      primaryTextColor:'#e6ecf7', lineColor:'#5b7bb0', fontSize:'13px',
+      actorBkg:'#16233d', actorBorder:'#38bdf8', signalColor:'#93a4c3', labelBoxBkgColor:'#111a2e'
+    }
+  });
+
+  const md = document.getElementById('md').textContent;
+
+  // Custom renderer: turn ```mermaid fences into <div class="mermaid">
+  const renderer = new marked.Renderer();
+  const origCode = renderer.code.bind(renderer);
+  renderer.code = (code, lang) => {
+    const c = (typeof code === 'object') ? code.text : code;
+    const l = (typeof code === 'object') ? code.lang : lang;
+    if ((l || '').trim() === 'mermaid') return `<div class="mermaid">${c}</div>`;
+    return origCode(code, lang);
+  };
+  marked.setOptions({ renderer, headerIds:true, mangle:false });
+
+  document.getElementById('content').innerHTML = marked.parse(md);
+
+  // Build TOC from h2/h3
+  const toc = document.getElementById('toc');
+  document.querySelectorAll('#content h2, #content h3').forEach((h,i)=>{
+    if(!h.id) h.id = 'sec-'+i;
+    const a = document.createElement('a');
+    a.href = '#'+h.id; a.textContent = h.textContent;
+    if(h.tagName==='H3') a.className='h3';
+    toc.appendChild(a);
+  });
+
+  await mermaid.run({ querySelector:'.mermaid' });
+</script>
+</body>
+</html>

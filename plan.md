@@ -256,12 +256,18 @@ erDiagram
   CALLLOG ||--o{ EXTRACTEDRESPONSE : yields
   CALLLOG ||--o| ESCALATION : may_raise
   FOLLOWUPQUESTION ||--o{ EXTRACTEDRESPONSE : answered_by
+  CAREPLAN ||--o{ SCHEDULEDCALL : schedules
+  SCHEDULEDCALL ||--o{ CALLTARGET : targets
+  MEDICINE ||--o{ CALLTARGET : referenced_by
+  FOLLOWUPQUESTION ||--o{ CALLTARGET : referenced_by
+  SCHEDULEDCALL ||--o| CALLLOG : produces
 
   PATIENT {
     int id PK
     string name
     string phone
     string preferred_language "BCP-47 e.g. hi-IN"
+    string timezone "IANA e.g. Asia/Kolkata"
     string diagnosis
     string family_contact
     string notes
@@ -288,14 +294,22 @@ erDiagram
     int id PK
     int patient_id FK
     string status "active|paused|done"
+    date start_date "day 0 for ask_after_days"
+    string call_window "allowed hours e.g. 08:00-20:00"
+    int max_retries "per scheduled call (default 3)"
+    string retry_backoff "csv mins e.g. 15,60,240"
     datetime created_at
   }
   MEDICINE {
     int id PK
     int care_plan_id FK
     string name
-    string dose
+    string dose "e.g. 500mg"
     string schedule "csv times e.g. 08:00,20:00"
+    int window_minutes "grace window (default 30)"
+    string instructions "e.g. after food"
+    date start_date
+    date end_date
   }
   FOLLOWUPQUESTION {
     int id PK
@@ -304,6 +318,28 @@ erDiagram
     string type "boolean|number|enum|short"
     string options "csv for enum"
     int ask_after_days
+    string at_time "clock time to ask e.g. 10:00"
+  }
+  SCHEDULEDCALL {
+    int id PK
+    int care_plan_id FK
+    int patient_id FK
+    string kind "medicine|followup|callback"
+    datetime due_at "UTC materialized slot"
+    string slot_key "idempotency e.g. 2026-08-10T08:00|med"
+    string status "pending|placed|completed|failed|skipped|no_answer"
+    int attempts
+    datetime next_attempt_at
+    int call_log_id FK "nullable, once placed"
+    string last_error
+    datetime created_at
+  }
+  CALLTARGET {
+    int id PK
+    int scheduled_call_id FK
+    string ref_type "medicine|followup"
+    int ref_id FK "medicine_id or question_id"
+    string label "e.g. Metformin 500mg after food"
   }
   CALLLOG {
     int id PK
@@ -764,3 +800,184 @@ frontend/
     │   └── ui/ (shadcn primitives) · KpiTile · Charts
     └── pages/ Dashboard · Patients · PatientDetail · Brain · Documents · Settings
 ```
+
+---
+
+## 17. Call scheduling engine (cron)
+
+Calls are **not** hard-coded — they are generated from what the doctor configures on the dashboard. The **Care Plan builder is the single source of truth**: medicines + their times, follow-up questions + their day/time, the patient's language, timezone and allowed call window. A background **cron/APScheduler** worker reads that config, materializes concrete due slots, and places one call per due slot — and **each call is about the specific medicine(s) of that specific patient due at that moment**.
+
+### 17.1 Dashboard is the source of truth
+
+| Dashboard field (Care Plan builder) | Persisted to | Drives |
+|---|---|---|
+| Medicine name + dose + **schedule times** (e.g. `08:00,20:00`) | `Medicine.name/dose/schedule` | When + what to say in medicine calls |
+| Medicine **instructions** (e.g. "after food") | `Medicine.instructions` | Spoken in the call script |
+| Medicine **grace window** | `Medicine.window_minutes` | How late a dose can still be placed |
+| Medicine **start/end date** | `Medicine.start_date/end_date` | Active date range for that drug |
+| Follow-up question + **ask_after_days** + **at_time** | `FollowUpQuestion.*` | When follow-up calls fire |
+| Patient **language** | `Patient.preferred_language` | TTS/Translate/STT language |
+| Patient **timezone** | `Patient.timezone` | Local-time → UTC slot conversion |
+| **Call window** (allowed hours) | `CarePlan.call_window` | No calls outside e.g. 08:00–20:00 |
+| **Retries / backoff** | `CarePlan.max_retries/retry_backoff` | No-answer / failure handling |
+
+Whenever the doctor **saves the plan** (or clicks **Enable Patient Care+**), the backend (re)materializes upcoming `ScheduledCall` rows for the next horizon (e.g. next 24–48h). Editing the plan re-syncs future pending slots (past/placed slots are never rewritten).
+
+### 17.2 Data model for scheduling
+
+```mermaid
+erDiagram
+  CAREPLAN ||--o{ SCHEDULEDCALL : schedules
+  SCHEDULEDCALL ||--o{ CALLTARGET : targets
+  MEDICINE ||--o{ CALLTARGET : referenced_by
+  FOLLOWUPQUESTION ||--o{ CALLTARGET : referenced_by
+  SCHEDULEDCALL ||--o| CALLLOG : produces
+  SCHEDULEDCALL {
+    int id PK
+    int care_plan_id FK
+    int patient_id FK
+    string kind "medicine|followup|callback"
+    datetime due_at "UTC"
+    string slot_key "idempotency key"
+    string status "pending|placed|completed|failed|skipped|no_answer"
+    int attempts
+    datetime next_attempt_at
+    int call_log_id FK
+    string last_error
+  }
+  CALLTARGET {
+    int id PK
+    int scheduled_call_id FK
+    string ref_type "medicine|followup"
+    int ref_id FK
+    string label "Metformin 500mg after food"
+  }
+```
+
+- A **`ScheduledCall`** = one call to place at `due_at`.
+- Its **`CALLTARGET`** rows say **which medicines/questions this call is about** — so the same 08:00 call can cover *Metformin 500mg + Amlodipine 5mg* together, while the 20:00 call covers only the evening dose.
+- `slot_key` (e.g. `patient42|2026-08-10T08:00|medicine`) guarantees **idempotency** — the cron can run every minute and never double-book the same dose.
+
+### 17.3 Materialization: dashboard config → concrete slots
+
+```mermaid
+flowchart TD
+  SAVE["Doctor saves Care Plan / Enable Care+"] --> MAT["materialize_schedule(care_plan, horizon=48h)"]
+  MAT --> LOOPM["for each Medicine active in range"]
+  LOOPM --> TIMES["for each time in schedule (patient tz → UTC)"]
+  TIMES --> GRP["group meds sharing the same slot"]
+  GRP --> UPS1["upsert ScheduledCall(kind=medicine, due_at, slot_key)"]
+  UPS1 --> TGT1["attach CALLTARGET per medicine (name+dose+instructions)"]
+  MAT --> LOOPF["for each FollowUpQuestion"]
+  LOOPF --> DAY["due = start_date + ask_after_days @ at_time (tz→UTC)"]
+  DAY --> UPS2["upsert ScheduledCall(kind=followup, due_at, slot_key)"]
+  UPS2 --> TGT2["attach CALLTARGET per question"]
+```
+
+**Grouping rule:** medicines with the **same local time** are merged into **one** `ScheduledCall` (patient gets a single call listing all due meds), instead of several back-to-back calls.
+
+### 17.4 The cron tick (runs every minute)
+
+```mermaid
+flowchart TD
+  T["APScheduler tick @ every 60s (now_utc)"] --> Q["query ScheduledCall<br/>status in (pending,no_answer,failed)<br/>AND next_attempt_at <= now<br/>AND due_at <= now"]
+  Q --> W{"inside CarePlan.call_window<br/>(patient local time)?"}
+  W -->|no| SNZ["defer next_attempt_at → window open"]
+  W -->|yes| BUILD["build call for THIS slot:<br/>resolve CALLTARGETs → medicine names/doses/instructions"]
+  BUILD --> SCRIPT["LLM script (only these meds) → Translate(lang) → TTS"]
+  SCRIPT --> PLACE["telephony.place_call() (twilio|sim)"]
+  PLACE --> LOG["create CallLog, link scheduled_call.call_log_id, status=placed"]
+  LOG --> ANS{"answered?"}
+  ANS -->|completed| DONE["status=completed → STT→Analytics→CareEvents"]
+  ANS -->|no answer / fail| RETRY{"attempts < max_retries?"}
+  RETRY -->|yes| BACK["attempts++, next_attempt_at = now + backoff[attempts]"]
+  RETRY -->|no| MISS["status=skipped → CareEvent(missed_dose) → adherence↓ → maybe escalate/caregiver"]
+```
+
+Pseudocode:
+
+```python
+def tick(now_utc):
+    due = query(ScheduledCall,
+                status_in=["pending", "no_answer", "failed"],
+                due_at__lte=now_utc,
+                next_attempt_at__lte=now_utc)
+    for sc in due:
+        if not within_call_window(sc, now_utc):
+            sc.next_attempt_at = next_window_open(sc); continue
+        targets = resolve_targets(sc)                       # the specific meds/questions
+        script  = build_script(sc.kind, targets, patient)   # names ONLY for this slot
+        text    = translate(script, patient.preferred_language)
+        audio   = tts(text, patient.preferred_language, speaker)
+        call    = telephony.place_call(patient, audio, sc)  # twilio | simulation
+        sc.call_log_id, sc.status, sc.attempts = call.id, "placed", sc.attempts + 1
+```
+
+### 17.5 Per-call medicine targeting (the key requirement)
+
+- Each `ScheduledCall` carries **exactly the medicines due at that time** via `CALLTARGET`.
+- `build_script()` uses **only those** targets, so the patient hears the right drugs:
+  - 08:00 → *"…time for your morning **Metformin 500mg** and **Amlodipine 5mg**, taken **after food**…"*
+  - 20:00 → *"…time for your evening **Metformin 500mg**…"*
+- The patient's spoken reply is matched back to each target, producing **per-medicine adherence** (`ExtractedResponse` keyed by `medicine_id`), not just a single yes/no.
+
+### 17.6 End-to-end: dashboard → cron → call
+
+```mermaid
+sequenceDiagram
+  actor Doc as Doctor (Dashboard)
+  participant BE as FastAPI
+  participant DB as SQLite
+  participant CR as APScheduler (cron)
+  participant SV as Sarvam
+  participant TW as Twilio
+  actor Pat as Patient
+  Doc->>BE: Save Care Plan (meds, times, lang, tz, window)
+  BE->>DB: upsert Medicine/FollowUpQuestion
+  BE->>DB: materialize ScheduledCall + CALLTARGET (next 48h)
+  loop every 60s
+    CR->>DB: due & in-window ScheduledCalls?
+    DB-->>CR: [slot: 08:00 → Metformin+Amlodipine]
+    CR->>SV: LLM script(these meds) → Translate → TTS
+    CR->>TW: place call
+    TW->>Pat: "time for Metformin & Amlodipine (after food)"
+    Pat-->>TW: reply
+    TW->>BE: recording webhook
+    BE->>SV: STT → Text Analytics (per-medicine)
+    BE->>DB: CallLog + per-med adherence + CareEvents; sc.status=completed
+  end
+```
+
+### 17.7 Reliability rules
+
+- **Idempotency:** unique `slot_key` per (patient, slot, kind) — safe to run the tick continuously.
+- **Timezone:** all schedule times are patient-local (`Patient.timezone`) → stored as UTC `due_at`.
+- **Call window:** never dial outside `CarePlan.call_window`; out-of-window slots defer to next open time.
+- **Retries:** `no_answer`/`failed` → `attempts++`, reschedule via `retry_backoff` (e.g. 15m, 1h, 4h) up to `max_retries`, then mark `skipped`.
+- **Missed dose:** a `skipped` medicine slot emits a `missed_dose` CareEvent, drops adherence, and (if repeated) notifies the caregiver / raises an escalation.
+- **Plan edits:** re-materialization only touches **future `pending`** slots; already `placed/completed` history is immutable.
+
+### 17.8 Demo mode (so judges see it fire fast)
+
+- `SCHED_TICK_SECONDS` (default 60) can be lowered for demos.
+- **Time-scale** flag: interpret `ask_after_days` as minutes; add a **"Run scheduler now"** button (`POST /schedule/run-now`) and **"Simulate slot"** to trigger a specific `ScheduledCall` on demand.
+- Dashboard shows an **Upcoming Calls** queue (next due slots + their target meds) and a **live status** as the cron places them.
+
+### 17.9 New API endpoints for scheduling
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/patients/{id}/care-plan` | Save plan → **auto-materialize** ScheduledCalls |
+| POST | `/patients/{id}/schedule/rematerialize` | Rebuild future pending slots |
+| GET | `/patients/{id}/schedule` | Upcoming ScheduledCalls (+ targets/status) |
+| GET | `/schedule/upcoming` | Global queue for dashboard |
+| POST | `/schedule/run-now` | Force a tick (demo) |
+| POST | `/schedule/{scheduled_call_id}/simulate` | Fire one slot immediately (demo) |
+| PATCH | `/schedule/{scheduled_call_id}` | Snooze / skip / change time |
+
+### 17.10 Where it lives in the code
+
+- `services/scheduler.py` — APScheduler setup + `tick()` (started in FastAPI `lifespan`).
+- `services/careplus.py` — `materialize_schedule()`, `resolve_targets()`, `build_script()`.
+- `services/telephony.py` — `place_call()` (twilio | simulation).
+- Frontend `CarePlanBuilder` writes the config; `UpcomingCalls` component renders the queue on the dashboard/patient page.

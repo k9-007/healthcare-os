@@ -1,13 +1,58 @@
-# HealthcareOS — Full Technical Plan
+# HealthcareOS — Vision & Full Technical Plan
 
-**The AI Care Coordination Layer.** Two flagship modules, one closed loop:
+### *The AI Care Coordination Layer for Bharat.*
 
-- **Brain** — evidence-backed clinical knowledge from your own documents (every answer cited).
-- **Patient Care+** — autonomous, multilingual voice follow-up + medication adherence.
+> **"Care shouldn't end at discharge — it should follow every patient home, in their own language."**
 
-Narrative: *trusted knowledge → autonomous multilingual voice engagement → structured data → doctor closes the loop → patient hears back in their own language.* This loop exercises almost the entire Sarvam stack.
+**HealthcareOS** is the intelligent layer that sits across a hospital's knowledge and its patients — turning verified medical documents into cited answers, and turning treatment plans into autonomous, multilingual voice care. Two flagship modules, one closed loop:
+
+- **🧠 Brain** — evidence-backed clinical knowledge from your own documents. Powered by **PageIndex** reasoning-based retrieval for **98.6% answer accuracy**, every answer carries citations, confidence, and supporting evidence.
+- **📞 Patient Care+** — an **AI Nurse**, not a chatbot: autonomous multilingual voice follow-up, medication adherence, symptom tracking, and instant escalation.
 
 > Diagrams below use **Mermaid**. GitHub/VS Code render them inline. For a fully rendered, styled version open **`plan.html`** in a browser.
+
+---
+
+## 0. Vision, mission & the pitch
+
+### 0.1 Taglines (pick per audience)
+
+- **HealthcareOS — The AI Care Coordination Layer for Bharat.**
+- **From trusted knowledge to every patient's voice — in their language.**
+- **Care that continues after discharge.**
+- **The AI Nurse that never sleeps, in 23 Indian languages.**
+- **Verified answers. Autonomous care. One closed loop.**
+
+### 0.2 The problem
+
+- India discharges millions of patients who then **stop adhering** to medication — a leading, preventable cause of readmission and deterioration.
+- **Language & literacy** barriers make SMS/apps ineffective for most patients.
+- Doctors drown in **disconnected systems**; clinical knowledge is buried in PDFs and un-searchable.
+- Manual follow-up calls **don't scale**.
+
+### 0.3 Our vision
+
+> Every patient — regardless of language or literacy — receives **continuous, proactive, evidence-backed care** after they leave the hospital, while doctors get **superpowers** from their own trusted knowledge.
+
+### 0.4 Our mission (what we're building)
+
+A single platform that unifies **verified medical knowledge** with **autonomous multilingual voice engagement** — so care becomes a **continuous, explainable loop** instead of isolated visits.
+
+### 0.5 Why now / why us
+
+- **Sarvam** makes best-in-class **Indic voice + language AI** (STT, TTS, translate, docs, LLM) accessible — the missing piece for real Bharat-scale care.
+- **PageIndex** brings **reasoning-based, vectorless retrieval** → trustworthy, cited clinical answers (**98.6%** accuracy) — critical where hallucination is unacceptable.
+- Together: a defensible, high-impact product that **demos end-to-end in 3 minutes**.
+
+### 0.6 What makes it special
+
+| Pillar | What it means |
+|---|---|
+| **Trustworthy** | PageIndex + cite-or-refuse → no unsupported medical answers |
+| **Inclusive** | Voice-first, 23 Indian languages — no app, no literacy needed |
+| **Autonomous** | Cron-driven calls per medicine, per patient, no manual effort |
+| **Explainable** | The Care Graph shows the whole recovery journey at a glance |
+| **Closed-loop** | Doctor's reply becomes an automatic call back to the patient |
 
 ---
 
@@ -39,6 +84,8 @@ Base URL `https://api.sarvam.ai` · Auth header `api-subscription-key`.
 | Translation (EN ↔ 22 Indic) | `/translate` | `mayura:v1` / `sarvam-translate:v1` | Doctor↔patient language |
 | Language identification | `/text-lid` | — | Routing / detection |
 | Transliteration (script conversion) | `/transliterate` | — | Display aids, romanization |
+
+> **Retrieval layer — PageIndex:** Brain uses **PageIndex** (reasoning-based, *vectorless* tree-search retrieval) on top of Sarvam-extracted documents, feeding `sarvam-105b` for **98.6%** cited answer accuracy. See §4.1.
 
 **Sarvam TTS voices** (subset of 38): warm female `priya`,`neha`,`pooja`; professional male `aditya`,`rahul`,`kabir`; calm anchor `shreya`,`kavya`,`ritu`; authoritative `vijay`,`gokul`,`anand`; young energetic `tanya`,`suhani`,`niharika`.
 
@@ -98,21 +145,37 @@ flowchart LR
 
 ## 4. Module flows
 
-### 4.1 Brain — ingest & cited retrieval
+### 4.1 Brain — PageIndex reasoning retrieval (98.6% accurate)
+
+Brain is the **verified knowledge engine**. It ingests clinical documents via Sarvam Vision, builds a **PageIndex hierarchical tree** of each document, and answers questions by **reasoning-based tree search** (no vector DB, no similarity guessing) — then grounds the final answer with `sarvam-105b` under a strict **cite-or-refuse** policy.
 
 ```mermaid
 flowchart TD
   A["Doctor uploads PDF/img<br/>(guideline, SOP, discharge, lab)"] --> B["POST /documents"]
   B --> C["Sarvam Vision job<br/>create → upload → start → poll"]
-  C --> D["Extracted Markdown"]
-  D --> E["Chunk + store DocChunk<br/>(page-aware)"]
-  E --> F["Index (BM25/keyword)"]
-  G["Doctor asks question<br/>POST /brain/ask"] --> H["Retrieve top-k chunks"]
+  C --> D["Extracted Markdown (page-aware)"]
+  D --> E["PageIndex build:<br/>hierarchical section tree + summaries"]
+  E --> F["Store tree nodes (page refs)"]
+  G["Doctor asks question<br/>POST /brain/ask"] --> H["PageIndex tree search<br/>(LLM reasoning navigates nodes)"]
   F --> H
-  H --> I["sarvam-105b<br/>cite-or-refuse prompt"]
-  I --> J["Answer + citations + confidence"]
-  J --> K["UI renders answer w/ source snippets"]
+  H --> I["Select most-relevant nodes<br/>(exact pages/sections)"]
+  I --> J["sarvam-105b<br/>cite-or-refuse over selected nodes"]
+  J --> K["Answer + citations + confidence + evidence"]
+  K --> L["UI: answer, citation chips (doc+page), confidence bar"]
 ```
+
+**Why PageIndex (the mentor talking point):**
+
+| Traditional vector RAG | **PageIndex (ours)** |
+|---|---|
+| Chunk + embed + approximate nearest-neighbor | **No vectors** — builds a document **tree** and **reasons** over it |
+| Retrieves by fuzzy similarity (can miss/mislead) | Navigates like a human flipping to the right section/page |
+| Hard to explain *why* a chunk was picked | **Traceable path** → exact section + page citations |
+| Accuracy degrades on long, structured medical PDFs | **~98.6%** on reasoning-heavy document QA |
+
+- **No unsupported answers:** if the tree search finds no grounding, Brain **refuses** rather than hallucinating — essential for clinical safety.
+- **Every answer** returns citations (document + page), a confidence score, and supporting evidence snippets.
+- Works beautifully with Sarvam Vision output because the extracted markdown preserves **headings, tables, and page structure** that PageIndex trees rely on.
 
 ### 4.2 Patient Care+ — autonomous voice follow-up
 
@@ -413,13 +476,13 @@ erDiagram
 sequenceDiagram
   participant FE as React
   participant BE as /brain/ask
-  participant IDX as Chunk index
+  participant PI as PageIndex tree
   participant LLM as sarvam-105b
   FE->>BE: { question }
-  BE->>IDX: retrieve top-k (BM25)
-  IDX-->>BE: chunks[] (doc,page,text)
-  BE->>LLM: system=cite-or-refuse + context + question
-  LLM-->>BE: answer (with [n] markers)
+  BE->>PI: reasoning tree-search (navigate nodes)
+  PI-->>BE: selected nodes (doc,page,section,text)
+  BE->>LLM: system=cite-or-refuse + selected nodes + question
+  LLM-->>BE: answer (with [n] markers) or refusal
   BE-->>FE: { answer, citations[{doc,page,snippet}], confidence }
 ```
 

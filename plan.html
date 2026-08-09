@@ -36,6 +36,10 @@
   .hero h1{margin:0 0 2px;font-size:34px;letter-spacing:.3px}
   .hero-tag{font-size:16px;font-weight:700;color:var(--accent2);margin-bottom:8px}
   .hero-quote{font-style:italic;color:#cfe3f5;border-left:3px solid var(--brand);padding-left:12px;margin:10px 0 12px}
+  .features{list-style:none;padding:0;margin:8px 0 16px;display:grid;grid-template-columns:1fr 1fr;gap:6px 22px}
+  .features li{position:relative;padding-left:16px;color:#dbe6f7;font-size:13.5px}
+  .features li::before{content:"▹";position:absolute;left:0;color:var(--accent2)}
+  @media(max-width:760px){.features{grid-template-columns:1fr}}
   .pill{display:inline-block;background:var(--panel);border:1px solid var(--border);color:var(--accent2);
     padding:3px 10px;border-radius:999px;font-size:12px;margin-right:6px}
   h1,h2,h3{scroll-margin-top:20px;line-height:1.25}
@@ -75,7 +79,17 @@
       <h1>HealthcareOS</h1>
       <div class="hero-tag">The AI Care Coordination Layer for Bharat</div>
       <p class="hero-quote">"Care shouldn't end at discharge — it should follow every patient home, in their own language."</p>
-      <p>Two flagship modules, one closed loop: <b>🧠 Brain</b> — cited clinical knowledge via <b>PageIndex</b> (<b>98.6%</b> accurate) + <b>📞 Patient Care+</b> — an autonomous multilingual <b>AI Nurse</b>.</p>
+      <p>Two flagship modules, one closed loop — plus everything that makes the loop work:</p>
+      <ul class="features">
+        <li><b>🧠 Brain</b> — cited clinical knowledge via <b>PageIndex</b> (<b>98.6%</b> accurate, cite-or-refuse)</li>
+        <li><b>📞 Patient Care+</b> — autonomous multilingual <b>AI Nurse</b>: voice follow-up &amp; medication adherence</li>
+        <li><b>🗓️ Smart Call Scheduling</b> — cron-driven calls, <b>per-medicine, per-patient</b></li>
+        <li><b>🕸️ Care Graph</b> — explainable recovery timeline, discharge → recovered</li>
+        <li><b>🚨 Instant Escalation</b> — urgent-symptom detection &amp; nurse alerts</li>
+        <li><b>📊 Analytics</b> — hospital-wide adherence, risk &amp; escalations</li>
+        <li><b>🌐 23 Indian languages</b> — STT · TTS · translate, end to end</li>
+        <li><b>🔁 Closed loop</b> — doctor's reply → automatic patient callback</li>
+      </ul>
       <div>
         <span class="pill">PageIndex 98.6%</span><span class="pill">FastAPI</span><span class="pill">React + Vite</span>
         <span class="pill">Twilio + Simulation</span><span class="pill">SQLite</span>

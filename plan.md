@@ -4,10 +4,16 @@
 
 > **"Care shouldn't end at discharge — it should follow every patient home, in their own language."**
 
-**HealthcareOS** is the intelligent layer that sits across a hospital's knowledge and its patients — turning verified medical documents into cited answers, and turning treatment plans into autonomous, multilingual voice care. Two flagship modules, one closed loop:
+**HealthcareOS** is the intelligent layer that sits across a hospital's knowledge and its patients — turning verified medical documents into cited answers, and turning treatment plans into autonomous, multilingual voice care. Two flagship modules, one closed loop — plus everything that makes the loop work:
 
-- **🧠 Brain** — evidence-backed clinical knowledge from your own documents. Powered by **PageIndex** reasoning-based retrieval for **98.6% answer accuracy**, every answer carries citations, confidence, and supporting evidence.
-- **📞 Patient Care+** — an **AI Nurse**, not a chatbot: autonomous multilingual voice follow-up, medication adherence, symptom tracking, and instant escalation.
+- **🧠 Brain** — evidence-backed clinical knowledge from your own documents. Powered by **PageIndex** reasoning-based retrieval for **98.6% answer accuracy**; every answer carries citations, confidence, and supporting evidence (cite-or-refuse).
+- **📞 Patient Care+** — an **AI Nurse**, not a chatbot: autonomous multilingual voice follow-up, medication adherence, and symptom tracking.
+- **🗓️ Smart Call Scheduling** — cron-driven calls, **per-medicine, per-patient**, from what the doctor sets on the dashboard.
+- **🕸️ Care Graph** — an explainable recovery timeline, discharge → recovered.
+- **🚨 Instant Escalation** — urgent-symptom detection and nurse alerts in real time.
+- **📊 Analytics** — hospital-wide adherence, risk, and escalation insights.
+- **🌐 23 Indian languages** — STT · TTS · translate, end to end.
+- **🔁 Closed loop** — the doctor's reply becomes an automatic callback to the patient in their language.
 
 > Diagrams below use **Mermaid**. GitHub/VS Code render them inline. For a fully rendered, styled version open **`plan.html`** in a browser.
 

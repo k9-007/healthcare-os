@@ -156,7 +156,7 @@ class CallLog(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id"))
     direction: Mapped[str] = mapped_column(String(16), default="outbound")
-    mode: Mapped[str] = mapped_column(String(16), default="simulation")  # twilio|simulation
+    mode: Mapped[str] = mapped_column(String(16), default="simulation")  # plivo|simulation
     status: Mapped[str] = mapped_column(String(16), default="queued")  # queued|ringing|completed|failed
     kind: Mapped[str] = mapped_column(String(16), default="medicine")  # medicine|followup|callback|manual
     script_text: Mapped[str] = mapped_column(Text, default="")
@@ -167,6 +167,7 @@ class CallLog(Base):
     transcript_english: Mapped[str] = mapped_column(Text, default="")
     detected_language: Mapped[str] = mapped_column(String(16), default="")
     language_confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    # Provider call id — Plivo CallUUID (column name kept for SQLite compat)
     twilio_sid: Mapped[str] = mapped_column(String(64), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 

@@ -100,7 +100,7 @@ export function CallPanel({ patient }: { patient: Patient }) {
     <section className="panel p-4">
       <SectionHeader
         title={t('calls.panelTitle')}
-        aside={<Tag tone={telephonyMode === 'twilio' ? 'accent' : 'neutral'}>{t('calls.mode', { mode: telephonyMode })}</Tag>}
+        aside={<Tag tone={telephonyMode === 'plivo' ? 'accent' : 'neutral'}>{t('calls.mode', { mode: telephonyMode })}</Tag>}
       />
 
       {/* status line */}

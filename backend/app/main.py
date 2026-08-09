@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
 from .db import Base, SessionLocal, engine
-from .routers import analytics, brain, calls, careplans, documents, patients, schedule, twilio_webhooks
+from .routers import analytics, brain, calls, careplans, documents, patients, plivo_webhooks, schedule
 from .seed import seed_if_empty
 from .services import scheduler
 from .services.telephony import effective_mode
@@ -63,7 +63,7 @@ app.include_router(brain.router)
 app.include_router(calls.router)
 app.include_router(schedule.router)
 app.include_router(analytics.router)
-app.include_router(twilio_webhooks.router)
+app.include_router(plivo_webhooks.router)
 
 
 @app.exception_handler(Exception)

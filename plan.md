@@ -68,7 +68,7 @@ A single platform that unifies **verified medical knowledge** with **autonomous 
 |---|---|
 | Backend | **Python + FastAPI** |
 | Frontend | **React + Vite + TypeScript + Tailwind** |
-| Calls | **Real telephony via Twilio** (turn-based IVR) + **simulation fallback** |
+| Calls | **Real telephony via Plivo Voice** (turn-based IVR) + **simulation fallback** |
 | Scope | **Brain + Patient Care+ + Care Graph + light Analytics** |
 | Languages | **Live multi-language** (Hindi, Tamil, Kannada, Marathi, English, …) |
 | Storage | **SQLite** via SQLAlchemy (zero-infra, real persistence) |

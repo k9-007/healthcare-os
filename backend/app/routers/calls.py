@@ -22,7 +22,7 @@ async def trigger_call(patient_id: int, db: Session = Depends(get_db)):
     """Manually place a care call now (demo hero button).
 
     Uses the care plan's medicines as targets if a plan exists, else a generic
-    check-in. Script → translate → TTS → place (twilio | simulation).
+    check-in. Script → translate → TTS → place (plivo | simulation).
     """
     patient = db.get(Patient, patient_id)
     if not patient:

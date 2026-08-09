@@ -12,7 +12,7 @@ export function Settings() {
         <SectionHeader title={t('settings.telephony')} />
         <p className="mb-4 text-xs leading-relaxed text-mist">{t('settings.telephonyDesc')}</p>
         <div className="flex gap-2">
-          {(['simulation', 'twilio'] as const).map((mode) => (
+          {(['simulation', 'plivo'] as const).map((mode) => (
             <button
               key={mode}
               onClick={() => setTelephonyMode(mode)}
@@ -22,20 +22,20 @@ export function Settings() {
               )}
             >
               <div className={cx('text-[13px] font-medium', telephonyMode === mode ? 'text-accent' : 'text-fog')}>
-                {mode === 'simulation' ? t('settings.simulation') : t('settings.twilio')}
+                {mode === 'simulation' ? t('settings.simulation') : t('settings.plivo')}
               </div>
               <div className="mt-0.5 text-[11px] text-mist">
-                {mode === 'simulation' ? t('settings.simulationDesc') : t('settings.twilioDesc')}
+                {mode === 'simulation' ? t('settings.simulationDesc') : t('settings.plivoDesc')}
               </div>
             </button>
           ))}
         </div>
-        {telephonyMode === 'twilio' && (
+        {telephonyMode === 'plivo' && (
           <div className="mt-4 grid grid-cols-2 gap-3">
-            <Field label="Account SID"><Input placeholder="ACxxxxxxxx" /></Field>
+            <Field label="Auth ID"><Input placeholder="MAxxxxxxxx" /></Field>
             <Field label="Auth token"><Input type="password" placeholder="••••••••" /></Field>
             <Field label="Voice number"><Input placeholder="+1 555 …" /></Field>
-            <Field label="Public base URL" hint="ngrok or hosted URL for webhooks">
+            <Field label="Public base URL" hint="ngrok HTTPS URL for webhooks + TTS audio">
               <Input placeholder="https://…" />
             </Field>
           </div>

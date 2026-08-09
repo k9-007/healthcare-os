@@ -6,10 +6,10 @@ type Theme = 'dark' | 'light'
 
 interface AppState {
   uiLanguage: string
-  telephonyMode: 'simulation' | 'twilio'
+  telephonyMode: 'simulation' | 'plivo'
   theme: Theme
   setUiLanguage: (code: string) => void
-  setTelephonyMode: (mode: 'simulation' | 'twilio') => void
+  setTelephonyMode: (mode: 'simulation' | 'plivo') => void
   toggleTheme: () => void
 }
 
@@ -43,6 +43,10 @@ export const useAppStore = create<AppState>()(
       name: 'healthcareos-ui',
       onRehydrateStorage: () => (state) => {
         if (!state) return
+        // Migrate persisted Twilio selection → Plivo
+        if ((state.telephonyMode as string) === 'twilio') {
+          state.telephonyMode = 'plivo'
+        }
         if (state.uiLanguage !== 'en-IN') applyLanguage(state.uiLanguage)
         applyTheme(state.theme)
       },

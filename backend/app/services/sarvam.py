@@ -27,7 +27,7 @@ logger = logging.getLogger("sarvam")
 # TTS hard limit is ~500 chars per call; keep headroom.
 TTS_CHUNK_CHARS = 450
 # Languages supported by bulbul TTS (subset of the 23 STT/translate languages).
-DEFAULT_SPEAKER = "anushka"
+DEFAULT_SPEAKER = "priya"  # bulbul:v3-compatible warm female voice
 
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 MAX_RETRIES = 3

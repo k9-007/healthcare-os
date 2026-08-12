@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Plus, Trash2 } from 'lucide-react'
+import { FileScan, Loader2, Plus, Trash2 } from 'lucide-react'
 import type { CarePlan, FollowUpQuestion, Medicine, Patient } from '@/api/types'
-import { useSaveCarePlan } from '@/api/hooks'
+import { useParsePrescription, useSaveCarePlan } from '@/api/hooks'
 import { languageLabel } from '@/lib/languages'
 import { Button, cx, Field, Input, SectionHeader, Select } from '@/components/ui/primitives'
 
@@ -26,7 +26,10 @@ export function CarePlanBuilder({ patient, plan }: { patient: Patient; plan: Car
   const [draft, setDraft] = useState<CarePlan>(plan ?? blankPlan(patient.id))
   const [dirty, setDirty] = useState(false)
   const [savedAt, setSavedAt] = useState<Date | null>(null)
+  const [scanNote, setScanNote] = useState<string | null>(null)
   const save = useSaveCarePlan()
+  const parseRx = useParsePrescription()
+  const fileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     if (plan) setDraft(plan)
@@ -53,6 +56,47 @@ export function CarePlanBuilder({ patient, plan }: { patient: Patient; plan: Car
     setSavedAt(new Date())
   }
 
+  async function onScanPrescription(file: File) {
+    setScanNote(null)
+    try {
+      const result = await parseRx.mutateAsync({ file, patientId: patient.id })
+      const imported: Medicine[] = result.medicines.map((m) => ({
+        id: tmpId--,
+        name: m.name,
+        dose: m.dose,
+        schedule: m.schedule.length ? m.schedule : ['08:00'],
+        instructions: [m.instructions, m.duration ? `× ${m.duration}` : ''].filter(Boolean).join(' · '),
+        startDate: new Date().toISOString(),
+        endDate: new Date(Date.now() + 14 * 864e5).toISOString(),
+      }))
+      if (!imported.length) {
+        setScanNote(t('carePlan.scanEmpty', { defaultValue: 'No medicines detected — try a clearer photo.' }))
+        return
+      }
+      setDraft((d) => ({ ...d, medicines: [...d.medicines, ...imported] }))
+      setDirty(true)
+      const unmatched = result.unmatched.length
+      setScanNote(
+        t('carePlan.scanDone', {
+          defaultValue:
+            'Imported {{count}} medicine(s) from the prescription. Review names/doses before saving.{{extra}}',
+          count: imported.length,
+          extra: unmatched
+            ? ` ${unmatched} line(s) unmatched — kept as written.`
+            : result.status === 'partial'
+              ? ' Some lines need a manual check.'
+              : '',
+        }),
+      )
+    } catch (e) {
+      setScanNote(
+        e instanceof Error
+          ? e.message
+          : t('carePlan.scanFailed', { defaultValue: 'Could not read prescription image.' }),
+      )
+    }
+  }
+
   return (
     <div className="space-y-5">
       {/* Medicines */}
@@ -60,23 +104,47 @@ export function CarePlanBuilder({ patient, plan }: { patient: Patient; plan: Car
         <SectionHeader
           title={t('carePlan.medicines')}
           aside={
-            <Button
-              size="sm"
-              onClick={() =>
-                update({
-                  medicines: [
-                    ...draft.medicines,
-                    {
-                      id: tmpId--, name: '', dose: '', schedule: ['08:00'],
-                      instructions: '', startDate: new Date().toISOString(),
-                      endDate: new Date(Date.now() + 14 * 864e5).toISOString(),
-                    },
-                  ],
-                })
-              }
-            >
-              <Plus size={13} /> {t('carePlan.addMedicine')}
-            </Button>
+            <div className="flex items-center gap-2">
+              <input
+                ref={fileRef}
+                type="file"
+                accept="image/*,.pdf"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  e.target.value = ''
+                  if (f) void onScanPrescription(f)
+                }}
+              />
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={parseRx.isPending}
+                onClick={() => fileRef.current?.click()}
+              >
+                {parseRx.isPending ? <Loader2 size={13} className="animate-spin" /> : <FileScan size={13} />}
+                {parseRx.isPending
+                  ? t('carePlan.scanning', { defaultValue: 'Reading…' })
+                  : t('carePlan.scanRx', { defaultValue: 'Scan prescription' })}
+              </Button>
+              <Button
+                size="sm"
+                onClick={() =>
+                  update({
+                    medicines: [
+                      ...draft.medicines,
+                      {
+                        id: tmpId--, name: '', dose: '', schedule: ['08:00'],
+                        instructions: '', startDate: new Date().toISOString(),
+                        endDate: new Date(Date.now() + 14 * 864e5).toISOString(),
+                      },
+                    ],
+                  })
+                }
+              >
+                <Plus size={13} /> {t('carePlan.addMedicine')}
+              </Button>
+            </div>
           }
         />
         {draft.medicines.length === 0 ? (
@@ -108,6 +176,9 @@ export function CarePlanBuilder({ patient, plan }: { patient: Patient; plan: Car
               </div>
             ))}
           </div>
+        )}
+        {scanNote && (
+          <p className="mt-3 text-[11px] leading-relaxed text-fog">{scanNote}</p>
         )}
         <p className="mt-3 text-[11px] leading-relaxed text-faint">
           {t('carePlan.mergeNote', { language: languageLabel(patient.preferredLanguage) })}

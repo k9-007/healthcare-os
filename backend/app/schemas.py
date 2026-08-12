@@ -201,6 +201,11 @@ class CarePlanOut(ORMModel):
     questions: list[FollowUpQuestionOut] = []
 
 
+# ---------- Prescriptions (image → structured medicines) ----------
+# Re-export pipeline models so routers use the same shapes as OpenAPI.
+from .services.prescription.schemas import PrescriptionParseResult as PrescriptionParseOut  # noqa: E402
+
+
 # ---------- Documents / Brain ----------
 
 class DocumentOut(ORMModel):

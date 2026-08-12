@@ -99,6 +99,15 @@ export function useUploadDocument() {
   })
 }
 
+export function useParsePrescription() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ file, patientId }: { file: File; patientId?: number | null }) =>
+      api.parsePrescription(file, patientId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['documents'] }),
+  })
+}
+
 export interface AskBrainInput {
   question: string
   patientId?: number | null

@@ -167,9 +167,8 @@ def speak_element(text: str) -> str:
 def record_element(action_url: str, *, max_length: int = 25, silence_timeout: int = 2) -> str:
     """Record one patient turn, ending it on `silence_timeout` seconds of silence.
 
-    This is the turn-taking mechanism: Plivo has no VAD hook, so a silence
-    window ends the turn and posts the audio to `action_url`, which answers with
-    the next question.
+    Used only when VOICE_MODE=classic. The streaming path (VOICE_MODE=stream)
+    uses Silero VAD over a bidirectional `<Stream>` instead — see `stream_element`.
 
     `max_length` must stay under 30 s: Sarvam's synchronous STT rejects longer
     audio outright, which turns the whole reply into a lost turn. It is also the
@@ -184,6 +183,28 @@ def record_element(action_url: str, *, max_length: int = 25, silence_timeout: in
         f'<Record action="{_xml_escape(action_url)}" method="POST" fileFormat="wav" '
         f'maxLength="{max_length}" timeout="{silence_timeout}" finishOnKey="#" playBeep="true"/>'
     )
+
+
+def stream_element(ws_url: str, *, status_callback_url: str = "") -> str:
+    """Bidirectional Plivo Audio Stream — Silero VAD lives on our side of the socket.
+
+    `keepCallAlive=true` holds the call open until the WebSocket closes (agent
+    hangup). μ-law @ 8 kHz matches telephony and our existing PCM↔ulaw helpers.
+
+    `audioTrack=inbound` is what keeps the agent from hearing itself: the
+    outbound track is the TTS we just sent, and mixing it into the endpointer
+    makes every line trigger its own barge-in.
+    """
+    attrs = (
+        'bidirectional="true" keepCallAlive="true" audioTrack="inbound" '
+        'contentType="audio/x-mulaw;rate=8000"'
+    )
+    if status_callback_url:
+        attrs += (
+            f' statusCallbackUrl="{_xml_escape(status_callback_url)}" '
+            'statusCallbackMethod="POST"'
+        )
+    return f"<Stream {attrs}>{_xml_escape(ws_url)}</Stream>"
 
 
 def _xml_escape(text: str) -> str:

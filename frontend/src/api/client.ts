@@ -5,7 +5,7 @@
 import type {
   AnalyticsSummary, BrainAnswer, CallLog, CareEvent, CarePlan, Escalation,
   FollowUpQuestion, HospitalDoc, Medicine, NewPatientInput, Patient,
-  ScheduledCall, StructuredField,
+  PrescriptionParseResult, ScheduledCall, StructuredField,
 } from './types'
 
 export const API_BASE: string =
@@ -399,6 +399,49 @@ export const api = {
     if (patientId != null) form.append('patient_id', String(patientId))
     const d = await request<BeDocument>('/documents', { method: 'POST', body: form })
     return mapDocument(d)
+  },
+
+  async parsePrescription(file: File, patientId?: number | null): Promise<PrescriptionParseResult> {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('language', 'en-IN')
+    form.append('persist', 'true')
+    if (patientId != null) form.append('patient_id', String(patientId))
+    const r = await request<{
+      status: PrescriptionParseResult['status']
+      document_id: number | null
+      medicines: Array<{
+        name: string; matched_name: string; generic_name: string; brand_name: string
+        dose: string; frequency: string; schedule: string; duration: string
+        instructions: string; confidence: number; match_score: number
+        raw_name: string; matched: boolean
+      }>
+      unmatched: string[]
+      warnings: string[]
+      error: string
+    }>('/prescriptions/parse', { method: 'POST', body: form })
+    return {
+      status: r.status,
+      documentId: r.document_id,
+      unmatched: r.unmatched ?? [],
+      warnings: r.warnings ?? [],
+      error: r.error ?? '',
+      medicines: (r.medicines ?? []).map((m) => ({
+        name: m.name,
+        matchedName: m.matched_name,
+        genericName: m.generic_name,
+        brandName: m.brand_name,
+        dose: m.dose,
+        frequency: m.frequency,
+        schedule: m.schedule.split(',').map((s) => s.trim()).filter(Boolean),
+        duration: m.duration,
+        instructions: m.instructions,
+        confidence: m.confidence,
+        matchScore: m.match_score,
+        rawName: m.raw_name,
+        matched: m.matched,
+      })),
+    }
   },
 
   async getBrainHistory(): Promise<BrainAnswer[]> {

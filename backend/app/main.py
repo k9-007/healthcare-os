@@ -13,7 +13,7 @@ from .config import get_settings
 from .db import SessionLocal, ensure_schema
 from .routers import (
     analytics, brain, calls, careplans, documents, patients, plivo_webhooks,
-    schedule, voice_ws,
+    prescriptions, schedule, voice_ws,
 )
 from .seed import seed_if_empty
 from .services import scheduler
@@ -86,6 +86,7 @@ def voice_console():
 app.include_router(patients.router)
 app.include_router(careplans.router)
 app.include_router(documents.router)
+app.include_router(prescriptions.router)
 app.include_router(brain.router)
 app.include_router(calls.router)
 app.include_router(schedule.router)

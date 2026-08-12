@@ -81,3 +81,7 @@ def clip_wav(blob: bytes, max_ms: int) -> bytes:
 
 def rms(pcm: bytes) -> float:
     return float(audioop.rms(pcm, 2)) if pcm else 0.0
+
+
+def peak(pcm: bytes) -> float:
+    return float(audioop.max(pcm, 2)) if pcm else 0.0

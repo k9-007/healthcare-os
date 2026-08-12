@@ -3,6 +3,7 @@
 A transport hides where the audio comes from so `VoiceAgent` is identical for a
 real phone call and a browser call:
 
+  PlivoTransport   — Plivo Audio Streaming (μ-law 8 kHz, playAudio / clearAudio)
   TwilioTransport  — Twilio Media Streams (μ-law 8 kHz, base64, 20 ms frames)
   BrowserTransport — the operator console mic (raw PCM16 8 kHz binary frames)
 
@@ -50,8 +51,10 @@ class BaseTransport:
         self._sender: asyncio.Task | None = None
         self._reader: asyncio.Task | None = None
         self._mark_guard: asyncio.Task | None = None
+        self._inbound_residual = b""
         self.frames_in = 0
         self.frames_out = 0
+        self.frames_dropped = 0
 
     # ---------- lifecycle ----------
 
@@ -79,6 +82,25 @@ class BaseTransport:
                 return
             yield frame
 
+    def _offer_pcm(self, pcm: bytes) -> None:
+        """Re-block arbitrary-length PCM into exact 20 ms frames.
+
+        Carriers are free to batch or split media packets — Plivo's chunk size
+        is not part of its contract — but the endpointer counts pre-roll, gap
+        tolerance and trailing-silence trim in whole 20 ms frames. Feeding it a
+        100 ms packet as one "frame" silently stretches the pre-roll window to
+        two seconds and coarsens every threshold by 5x. Any partial tail is
+        carried into the next packet rather than zero-padded, which would inject
+        a click into the middle of the utterance.
+        """
+        if not pcm:
+            return
+        buf = self._inbound_residual + pcm
+        whole = len(buf) // PCM_BYTES_PER_FRAME * PCM_BYTES_PER_FRAME
+        for i in range(0, whole, PCM_BYTES_PER_FRAME):
+            self._offer(buf[i : i + PCM_BYTES_PER_FRAME])
+        self._inbound_residual = buf[whole:]
+
     def _offer(self, pcm_frame: bytes) -> None:
         self.frames_in += 1
         try:
@@ -86,10 +108,15 @@ class BaseTransport:
         except asyncio.QueueFull:
             # Never let a slow turn stall the socket reader; the oldest audio is
             # the least useful, so drop it and keep the stream live.
+            self.frames_dropped += 1
             with contextlib.suppress(asyncio.QueueEmpty):
                 self.inbound.get_nowait()
             with contextlib.suppress(asyncio.QueueFull):
                 self.inbound.put_nowait(pcm_frame)
+
+    def quality_summary(self) -> str:
+        """Transport-specific line diagnostics for the end-of-call log."""
+        return ""
 
     def _end_input(self) -> None:
         self.closed.set()
@@ -202,6 +229,131 @@ class BaseTransport:
         await self.stop()
 
 
+class PlivoTransport(BaseTransport):
+    """Plivo Audio Streaming: μ-law 8 kHz base64, bidirectional.
+
+    Inbound:  start / media / playedStream / clearedAudio
+    Outbound: playAudio / checkpoint / clearAudio
+
+    Playback completion uses `checkpoint` → `playedStream` (Plivo's equivalent
+    of Twilio's mark echo). Barge-in uses `clearAudio`.
+    See https://plivo.com/docs/voice-agents/audio-streaming/
+    """
+
+    CONTENT_TYPE = "audio/x-mulaw"
+
+    def __init__(self, ws: WebSocket) -> None:
+        super().__init__(ws)
+        self.stream_id = ""
+        self.call_uuid = ""
+        self._mark_seq = 0
+        self._pending_checkpoint = ""
+        self.ready = asyncio.Event()
+        self._last_seq = 0
+        self.off_track_packets = 0
+        self.sequence_gaps = 0
+        self.duplicate_packets = 0
+        self.chunk_sizes: set[int] = set()
+
+    async def _read_one(self) -> None:
+        raw = await self.ws.receive_text()
+        msg = json.loads(raw)
+        event = msg.get("event")
+        if event == "media":
+            media = msg.get("media") or {}
+            # The stream is requested as inbound-only, but never trust that: an
+            # outbound frame is our own TTS coming back, and feeding it to the
+            # endpointer makes the agent barge in on itself and transcribe its
+            # own voice as the patient's answer.
+            track = (media.get("track") or "inbound").lower()
+            if track != "inbound":
+                self.off_track_packets += 1
+                return
+            self._note_sequence(msg.get("sequenceNumber"))
+            payload = media.get("payload")
+            if payload:
+                pcm = ulaw_to_pcm16(base64.b64decode(payload))
+                self.chunk_sizes.add(len(pcm))
+                self._offer_pcm(pcm)
+        elif event == "start":
+            start = msg.get("start") or {}
+            self.stream_id = (
+                start.get("streamId") or msg.get("streamId") or self.stream_id
+            )
+            self.call_uuid = start.get("callId") or self.call_uuid
+            logger.info(
+                "plivo stream started id=%s call=%s tracks=%s format=%s",
+                self.stream_id, self.call_uuid,
+                start.get("tracks") or start.get("track") or "?",
+                start.get("mediaFormat") or "?",
+            )
+            self.ready.set()
+        elif event == "playedStream":
+            name = msg.get("name") or ""
+            if name and name == self._pending_checkpoint:
+                self.playback_done.set()
+        elif event == "clearedAudio":
+            # Far end confirmed barge-in; playback_done was already set in clear().
+            pass
+        elif event == "dtmf":
+            digit = (msg.get("dtmf") or {}).get("digit") or ""
+            logger.info("plivo dtmf digit=%s on stream %s", digit, self.stream_id)
+
+    def _note_sequence(self, raw: object) -> None:
+        """Track packet loss and reordering — both show up as clipped audio."""
+        try:
+            seq = int(raw)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return
+        if self._last_seq:
+            if seq <= self._last_seq:
+                self.duplicate_packets += 1
+            elif seq > self._last_seq + 1:
+                self.sequence_gaps += 1
+        self._last_seq = max(seq, self._last_seq)
+
+    def quality_summary(self) -> str:
+        return (
+            f"chunks={sorted(self.chunk_sizes)}B off_track={self.off_track_packets} "
+            f"gaps={self.sequence_gaps} dupes={self.duplicate_packets}"
+        )
+
+    async def _send_frame(self, pcm_frame: bytes) -> None:
+        await self.ws.send_text(json.dumps({
+            "event": "playAudio",
+            "media": {
+                "contentType": self.CONTENT_TYPE,
+                "sampleRate": 8000,
+                "payload": base64.b64encode(pcm16_to_ulaw(pcm_frame)).decode(),
+            },
+        }))
+
+    async def _on_drained(self) -> None:
+        # Don't set playback_done here — wait for Plivo to echo playedStream.
+        self._mark_seq += 1
+        self._pending_checkpoint = f"m{self._mark_seq}"
+        with contextlib.suppress(Exception):
+            await self.ws.send_text(json.dumps({
+                "event": "checkpoint",
+                "streamId": self.stream_id,
+                "name": self._pending_checkpoint,
+            }))
+        self._arm_mark_guard()
+
+    async def _send_clear(self) -> None:
+        self._pending_checkpoint = ""
+        if not self.stream_id:
+            return
+        await self.ws.send_text(json.dumps({
+            "event": "clearAudio",
+            "streamId": self.stream_id,
+        }))
+
+    async def hangup(self) -> None:
+        await asyncio.sleep(0.4)
+        await self.stop()
+
+
 class TwilioTransport(BaseTransport):
     """Twilio Media Streams: μ-law 8 kHz base64 payloads, both directions.
 
@@ -222,9 +374,13 @@ class TwilioTransport(BaseTransport):
         msg = json.loads(raw)
         event = msg.get("event")
         if event == "media":
-            payload = msg.get("media", {}).get("payload")
+            media = msg.get("media", {})
+            if (media.get("track") or "inbound").lower() != "inbound":
+                self.frames_dropped += 1
+                return
+            payload = media.get("payload")
             if payload:
-                self._offer(ulaw_to_pcm16(base64.b64decode(payload)))
+                self._offer_pcm(ulaw_to_pcm16(base64.b64decode(payload)))
         elif event == "start":
             start = msg.get("start", {})
             self.stream_sid = start.get("streamSid") or msg.get("streamSid") or ""
@@ -286,8 +442,7 @@ class BrowserTransport(BaseTransport):
             raise WebSocketDisconnect(msg.get("code", 1000))
         data = msg.get("bytes")
         if data:
-            for frame in frame_pcm(data):
-                self._offer(frame)
+            self._offer_pcm(data)
             return
         text = msg.get("text")
         if not text:
@@ -345,5 +500,4 @@ class NullTransport(BaseTransport):
         self.cleared += 1
 
     def feed(self, pcm: bytes) -> None:
-        for frame in frame_pcm(pcm, PCM_BYTES_PER_FRAME):
-            self._offer(frame)
+        self._offer_pcm(pcm)

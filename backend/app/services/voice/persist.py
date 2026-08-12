@@ -59,6 +59,29 @@ def add_turn(
     return turn
 
 
+INTERRUPTION_NOTES = {
+    "stop": ("Patient asked not to be called again", "critical"),
+    "wrong_person": ("Wrong number — this phone does not reach the patient", "warn"),
+    "busy": ("Patient was busy and asked to be called later", "info"),
+}
+
+
+def note_interruption(db: Session, call: CallLog, intent: str, transcript: str) -> None:
+    """Record a call the patient ended, as an event a human will actually see.
+
+    There is no consent or do-not-call table in this schema, so "never call me
+    again" cannot be enforced on the next scheduled slot. Raising a critical
+    care event is the strongest durable action available: the care team sees
+    it on the timeline and can stop the plan. This is a real gap, not a fix.
+    """
+    title, severity = INTERRUPTION_NOTES.get(intent, (f"Call interrupted: {intent}", "info"))
+    db.add(CareEvent(
+        patient_id=call.patient_id, type="alert" if severity == "critical" else "call",
+        severity=severity, title=title, detail=(transcript or "")[:300],
+    ))
+    db.flush()
+
+
 def record_answer(db: Session, call: CallLog, step: Step, u: Understanding) -> tuple[int, Escalation | None]:
     """Turn one understood reply into extracted responses, events and escalations."""
     events = 0

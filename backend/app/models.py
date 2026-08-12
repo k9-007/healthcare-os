@@ -40,7 +40,7 @@ class Document(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     patient_id: Mapped[int | None] = mapped_column(ForeignKey("patients.id"), nullable=True)
     title: Mapped[str] = mapped_column(String(300))
-    type: Mapped[str] = mapped_column(String(32), default="guideline")  # guideline|sop|discharge|lab|formulary
+    type: Mapped[str] = mapped_column(String(32), default="guideline")  # guideline|sop|discharge|lab|formulary|prescription
     file_path: Mapped[str] = mapped_column(String(500), default="")
     extracted_md: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|extracting|ready|failed

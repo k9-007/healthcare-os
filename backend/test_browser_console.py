@@ -108,10 +108,26 @@ async def main() -> int:
     ap.add_argument("--lang", default="hi-IN")
     ap.add_argument("--scenario", choices=sorted(SCENARIOS), default="adherent")
     ap.add_argument("--base", default=API)
+    ap.add_argument(
+        "--allow-dial", action="store_true",
+        help="permit this run against a backend wired to a real carrier",
+    )
     args = ap.parse_args()
     api = args.base.rstrip("/")
 
     async with httpx.AsyncClient(timeout=180) as http:
+        # /patients/{id}/call is the production entrypoint: against a live
+        # carrier it rings the patient's real phone, and the console then
+        # fights that call's own media stream for the same agent.
+        health = await http.get(f"{api}/health")
+        mode = health.json().get("telephony_mode") if health.status_code < 400 else "?"
+        if mode == "plivo" and not args.allow_dial:
+            print(
+                f"!! backend telephony_mode={mode} — this would place a real call to "
+                f"patient {args.patient}. Re-run with --allow-dial if that is intended."
+            )
+            return 1
+
         res = await http.post(f"{api}/patients/{args.patient}/call")
         if res.status_code >= 400:
             print(f"!! could not place call: {res.status_code} {res.text[:300]}")

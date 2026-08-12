@@ -13,6 +13,7 @@ const TYPE_LABEL: Record<HospitalDoc['type'], string> = {
   discharge: 'Discharge',
   lab: 'Lab report',
   formulary: 'Formulary',
+  prescription: 'Prescription',
 }
 
 export function Documents() {

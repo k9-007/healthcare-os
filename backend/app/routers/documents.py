@@ -18,7 +18,7 @@ logger = logging.getLogger("documents")
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 ALLOWED_EXTS = {".pdf", ".png", ".jpg", ".jpeg", ".md", ".txt"}
-DOC_TYPES = {"guideline", "sop", "discharge", "lab", "formulary"}
+DOC_TYPES = {"guideline", "sop", "discharge", "lab", "formulary", "prescription"}
 
 
 @router.post("", response_model=DocumentOut, status_code=201)

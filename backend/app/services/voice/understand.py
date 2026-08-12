@@ -16,23 +16,31 @@ from ..careplus import (
     _is_urgent,
 )
 from ..sarvam import SarvamUnavailable, extract_json, sarvam
+from .meta import Intent, PRIORITY, coerce, detect
 
 logger = logging.getLogger("voice.understand")
 
 SYSTEM = (
     "You are the understanding layer of a nurse's follow-up phone call. "
     "Classify the patient's spoken reply to the question that was just asked. "
+    "The patient may not be answering at all — people interrupt to ask who is "
+    "calling, why, or to have the question repeated. Report those as "
+    "meta_intents and set answered=false when the reply contains no actual "
+    "answer to the question. "
     "Use only what the patient said; never invent clinical detail. "
     "Reply with pure JSON and nothing else."
 )
 
+# meta_intents mirrors `voice.meta.Intent`; anything unrecognised is dropped.
 SCHEMA = (
     '{"answered":true|false,'
     '"yes_no":"yes"|"no"|"unclear",'
     '"answer":"one short sentence in English summarising their reply",'
     '"symptoms":["..."],'
     '"pain_score":null or 0-10,'
-    '"urgency":"low"|"medium"|"high"}'
+    '"urgency":"low"|"medium"|"high",'
+    '"meta_intents":[zero or more of "who_are_you","why_calling","repeat",'
+    '"confused","busy","wrong_person","language","stop","greeting"]}'
 )
 
 
@@ -45,10 +53,25 @@ class Understanding:
     pain_score: int | None = None
     urgency: str = "low"
     source: str = "llm"  # llm | keywords
+    meta_intents: list[Intent] = field(default_factory=list)
 
     @property
     def is_emergency(self) -> bool:
         return self.urgency == "high"
+
+    def has_clinical_answer(self, *, expects_yes_no: bool) -> bool:
+        """Whether this reply actually answered the question that was asked.
+
+        Deliberately strict. "Who is calling?" arrives with answered=true and
+        yes_no=unclear, and treating that as an answer is exactly how a
+        patient's question became a recorded "Took medicine: Unclear" and
+        skipped the question she was still waiting to hear.
+        """
+        if expects_yes_no:
+            return self.yes_no in {"yes", "no"}
+        if self.symptoms or self.pain_score is not None or self.urgency != "low":
+            return True
+        return self.answered and bool(self.answer.strip()) and not self.meta_intents
 
 
 async def understand(question_en: str, transcript: str, *, expects_yes_no: bool) -> Understanding:
@@ -68,7 +91,7 @@ async def understand(question_en: str, transcript: str, *, expects_yes_no: bool)
                     f"Respond with exactly this JSON shape:\n{SCHEMA}"
                 )},
             ],
-            temperature=0.1, max_tokens=220,
+            temperature=0.1, max_tokens=280,
         )
         result = _shape(extract_json(raw))
     except (SarvamUnavailable, Exception) as e:  # noqa: BLE001 — the call must continue
@@ -78,6 +101,11 @@ async def understand(question_en: str, transcript: str, *, expects_yes_no: bool)
         result = _keywords(text, expects_yes_no)
     elif expects_yes_no and result.yes_no == "unclear":
         result.yes_no = _keywords(text, True).yes_no
+
+    # The pattern scan is the floor, not a tiebreaker: it costs nothing and it
+    # still fires when the model is down or answers loosely.
+    merged = set(result.meta_intents) | set(detect(text))
+    result.meta_intents = [i for i in PRIORITY if i in merged]
 
     # Safety net: keyword red flags override anything the model concluded.
     if _is_urgent(text):
@@ -115,12 +143,15 @@ def _shape(data: object) -> Understanding:
         symptoms=symptoms,
         pain_score=pain_score,
         urgency=urgency,
+        meta_intents=coerce(data.get("meta_intents")),
     )
 
 
 def _keywords(text: str, expects_yes_no: bool) -> Understanding:
     low = text.lower()
-    out = Understanding(answered=True, answer=text[:400], source="keywords")
+    out = Understanding(
+        answered=True, answer=text[:400], source="keywords", meta_intents=detect(text)
+    )
     if expects_yes_no:
         if any(p in low for p in NEGATIVE_MED_PATTERNS):
             out.yes_no = "no"

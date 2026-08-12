@@ -43,6 +43,16 @@ CONVERSATION_MODEL = "sarvam-105b-conversations"
 # Telephony sample rate; TTS renders natively at 8 kHz so nothing is resampled.
 TELEPHONY_SAMPLE_RATE = 8000
 
+# saaras:v3 in codemix mode is the only combination that reads a real Indian
+# phone call correctly: patients answer a Hindi question in Hinglish, and
+# saarika:v2.5 under a hi-IN lock transliterates every English word into
+# Devanagari ("he is probably busy" → "ही इज प्रोबेबली बिजी"), which reads as
+# gibberish and destroys the understanding step downstream. Codemix keeps
+# English as English and Hindi as Devanagari.
+STT_MODEL = "saaras:v3"
+STT_MODEL_FALLBACK = "saarika:v2.5"
+STT_MODE = "codemix"
+
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 MAX_RETRIES = 3
 # Sarvam Vision hard limit per doc-digitization job.
@@ -59,6 +69,7 @@ class SarvamClient:
         self.base = self.settings.sarvam_base_url.rstrip("/")
         self._client: httpx.AsyncClient | None = None
         self._client_loop: asyncio.AbstractEventLoop | None = None
+        self._stt_model_ok = True
 
     # ---------- plumbing ----------
 
@@ -281,6 +292,11 @@ class SarvamClient:
 
     # ---------- STT ----------
 
+    def _stt_models(self) -> list[str]:
+        if not self._stt_model_ok:
+            return [STT_MODEL_FALLBACK]
+        return [STT_MODEL, STT_MODEL_FALLBACK]
+
     async def stt(
         self,
         audio_bytes: bytes,
@@ -290,14 +306,34 @@ class SarvamClient:
         timeout: float = 120.0,
         retries: int = MAX_RETRIES,
     ) -> tuple[str, str, float]:
-        """Returns (transcript, detected_language, confidence)."""
-        data: dict[str, str] = {"model": "saarika:v2.5"}
-        if language_hint:
-            data["language_code"] = language_hint
+        """Returns (transcript, detected_language, confidence).
+
+        `language_hint` is a lock, not a suggestion: leaving Sarvam to detect
+        the language of a short noisy telephony clip makes it guess a
+        neighbouring script (a clean "ठीक है" came back as Punjabi "ਠੀਕ ਹੈ"),
+        so the caller's planned language always wins.
+        """
         files = {"file": (filename, audio_bytes, guess_mime(filename))}
-        out = await self._request(
-            "POST", "/speech-to-text", data=data, files=files, timeout=timeout, retries=retries
-        )
+        models = self._stt_models()
+        for model in models:
+            data: dict[str, str] = {"model": model}
+            if language_hint:
+                data["language_code"] = language_hint
+            if model.startswith("saaras"):
+                data["mode"] = STT_MODE
+            try:
+                out = await self._request(
+                    "POST", "/speech-to-text", data=data, files=files,
+                    timeout=timeout, retries=retries,
+                )
+                break
+            except SarvamUnavailable as e:
+                if model is models[-1]:
+                    raise
+                # A model the account cannot use fails the same way every turn;
+                # remember the downgrade instead of paying for it again.
+                logger.warning("STT model %s rejected (%s); falling back", model, e)
+                self._stt_model_ok = False
         transcript = out.get("transcript") or ""
         lang = out.get("language_code") or language_hint or ""
         conf = 0.0

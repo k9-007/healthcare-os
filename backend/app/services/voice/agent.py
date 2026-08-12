@@ -21,14 +21,20 @@ from ...config import get_settings
 from ...db import SessionLocal
 from ...models import CallLog
 from ..sarvam import SarvamUnavailable, sarvam
-from . import dialogue, persist, prewarm
-from .audio import duration_ms, pcm_to_wav
+from . import dialogue, meta, persist, prewarm, stream_stt
+from .audio import SILENCE_FRAME
+from .meta import Intent
+from .audio import duration_ms, peak, pcm_to_wav, rms
 from .dialogue import Plan, Step
 from .transport import BaseTransport
 from .understand import Understanding, understand
-from .vad import Endpointer, Event
+from .vad import Endpointer, Event, Stats
 
 logger = logging.getLogger("voice.agent")
+
+# How many times the nurse will explain herself on one question before giving
+# up on clarifying and letting the reprompt ladder move the call along.
+MAX_META_REPLIES = 3
 
 
 class State(str, Enum):
@@ -61,6 +67,11 @@ class VoiceAgent:
         self.reprompts = 0
         self.no_answer_streak = 0
         self.escalated = False
+        # Meta-intent handling never advances the script, so it needs its own
+        # bound: a patient stuck on "who is this?" must not loop forever.
+        self.meta_replies = 0
+        self._ack_turn = 0
+        self._stt: stream_stt.SarvamStream | None = None
         self._listening_since = 0.0
         self._turn_task: asyncio.Task | None = None
         self._barge_in_pending = False
@@ -98,8 +109,15 @@ class VoiceAgent:
             "call %s conversation ready: %d steps in %s",
             self.call_id, len(self.plan.steps), self.plan.language,
         )
+        if self.settings.stt_streaming and self.settings.sarvam_api_key:
+            session = stream_stt.SarvamStream(
+                self.settings.sarvam_api_key, self.plan.language
+            )
+            self._stt = session if await session.connect() else None
 
     async def _shutdown(self) -> None:
+        if self._stt is not None:
+            await self._stt.close()
         if self._turn_task and not self._turn_task.done():
             self._turn_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -124,6 +142,12 @@ class VoiceAgent:
             if self.state is State.DONE:
                 return
             event = self.endpointer.push(frame)
+
+            # Only the patient's own turn goes to the streaming transcriber:
+            # feeding it the silence under our own questions invites finals
+            # that belong to no turn at all.
+            if self._stt is not None and self.state in (State.LISTENING, State.CAPTURING):
+                await self._stt.feed(frame)
 
             if self.state is State.SPEAKING:
                 await self._on_frame_speaking(event)
@@ -161,15 +185,18 @@ class VoiceAgent:
         if event is not Event.UTTERANCE_END:
             return
         pcm = self.endpointer.take_utterance()
+        stats = self.endpointer.last_stats
         self.state = State.THINKING
         barge_in, self._barge_in_pending = self._barge_in_pending, False
-        self._turn_task = asyncio.create_task(self._handle_utterance(pcm, barge_in))
+        self._turn_task = asyncio.create_task(self._handle_utterance(pcm, barge_in, stats))
 
     def _enter_listening(self) -> None:
         self.state = State.LISTENING
         self._playing = False
         self.endpointer.reset()
         self._listening_since = time.monotonic()
+        if self._stt is not None:
+            self._stt.begin_turn()
 
     # ---------- turns ----------
 
@@ -179,11 +206,11 @@ class VoiceAgent:
             return None
         return self.plan.steps[self.step_index]
 
-    async def _speak_step(self, step: Step | None) -> None:
+    async def _speak_step(self, step: Step | None, *, lead: str = "") -> None:
         if step is None:
-            await self._close()
+            await self._close(lead=lead)
             return
-        await self._speak(step.spoken, step_key=step.key)
+        await self._speak(step.spoken, step_key=step.key, lead=lead)
         if step.kind == "greeting":
             # The greeting is a statement, not a question — roll straight on.
             self.step_index += 1
@@ -191,8 +218,17 @@ class VoiceAgent:
             if next_step is not None:
                 await self._speak(next_step.spoken, step_key=next_step.key)
 
-    async def _speak(self, text: str, *, step_key: str = "", record: bool = True) -> None:
-        """Render (or fetch cached) audio and start real-time playback."""
+    async def _speak(
+        self, text: str, *, step_key: str = "", record: bool = True, lead: str = ""
+    ) -> None:
+        """Render (or fetch cached) audio and start real-time playback.
+
+        `lead` is a short line spoken immediately before `text` — an
+        acknowledgement, or the answer to a question the patient just asked.
+        The two are spliced into a single playback rather than queued as two:
+        a separate `play()` can land after the sender has already drained and
+        reported the line finished, which would hand the turn back mid-sentence.
+        """
         assert self.plan is not None
         # Claim the speaking state before synthesis: the frame loop runs
         # concurrently and would otherwise treat the not-yet-started line as
@@ -203,13 +239,19 @@ class VoiceAgent:
         self.transport.begin_playback()
 
         started = time.monotonic()
-        pcm = await prewarm.synthesize_cached(text, self.plan.language)
+        segments = [s for s in (lead, text) if s.strip()]
+        rendered = [await prewarm.synthesize_cached(s, self.plan.language) for s in segments]
         latency = int((time.monotonic() - started) * 1000)
+        usable = [p for p in rendered if p]
+        # A breath between the acknowledgement and the question; spliced with
+        # no gap they run together into one hurried word.
+        pcm = (SILENCE_FRAME * 6).join(usable) if usable else None
         if pcm is None:
             logger.error("call %s could not synthesize %r — skipping line", self.call_id, text[:60])
             self.transport.playback_done.set()
             self._enter_listening()
             return
+        text = " ".join(segments)
 
         self._playing = True
         await self.transport.play(pcm)
@@ -226,11 +268,16 @@ class VoiceAgent:
             self.call_id, step_key or "-", text[:70], latency, duration_ms(pcm),
         )
 
-    async def _handle_utterance(self, pcm: bytes, barge_in: bool) -> None:
+    async def _handle_utterance(self, pcm: bytes, barge_in: bool, stats: Stats) -> None:
         """STT → understanding → persistence → the next thing we say."""
         assert self.plan is not None
         step = self._current_step()
         started = time.monotonic()
+        logger.info(
+            "call %s utterance captured: %dms rms=%.0f peak=%.0f vad[%s]%s",
+            self.call_id, duration_ms(pcm), rms(pcm), peak(pcm), stats,
+            " barge-in" if barge_in else "",
+        )
         try:
             transcript, language, confidence = await self._transcribe(pcm)
         except asyncio.CancelledError:
@@ -258,14 +305,36 @@ class VoiceAgent:
             await self._on_unclear()
             return
 
+        # "Wrong number" and "stop calling me" are answered locally: they end
+        # the call, so spending an LLM round trip to confirm them is latency
+        # the patient pays for nothing.
+        ending = meta.terminal_intent(meta.detect(transcript))
+        if ending is not None:
+            await self._on_terminal_intent(ending, transcript)
+            return
+
+        expects_yes_no = bool(step and step.ref_type == "medicine")
         u = await understand(
             step.text_en if step else "How are you feeling?",
             transcript,
-            expects_yes_no=bool(step and step.ref_type == "medicine"),
+            expects_yes_no=expects_yes_no,
         )
 
         if u.urgency == "high":
             await self._on_emergency(step, u)
+            return
+
+        ending = meta.terminal_intent(u.meta_intents)
+        if ending is not None:
+            await self._on_terminal_intent(ending, transcript)
+            return
+
+        answered = u.has_clinical_answer(expects_yes_no=expects_yes_no)
+        if u.meta_intents and not answered:
+            # The patient asked us something instead of answering. Reply, and
+            # leave the script exactly where it was — no result is recorded for
+            # a question that has not been answered yet.
+            await self._on_meta(u.meta_intents, step)
             return
 
         if step is not None and not u.answered and self.reprompts < 1:
@@ -280,13 +349,32 @@ class VoiceAgent:
 
         self.reprompts = 0
         self.no_answer_streak = 0
+        self.meta_replies = 0
+        # An answer plus a question ("yes I took it — who is this?") gets both:
+        # the answer is recorded and the question is answered on the way to the
+        # next step, without re-asking what was already answered.
+        lead = self._meta_lead(u.meta_intents) or self._acknowledgement(step, u)
         self.step_index += 1
-        await self._speak_step(self._current_step())
+        await self._speak_step(self._current_step(), lead=lead)
 
     async def _transcribe(self, pcm: bytes) -> tuple[str, str, float]:
         assert self.plan is not None
         if duration_ms(pcm) < 200:
             return "", "", 0.0
+        level = rms(pcm)
+        if level < self.settings.vad_min_utterance_rms:
+            # Sarvam answers near-silence with a confident invented sentence,
+            # which the understanding step then treats as a real reply.
+            logger.info(
+                "call %s discarding %dms of near-silence (rms=%.0f)",
+                self.call_id, duration_ms(pcm), level,
+            )
+            return "", "", 0.0
+        if self._stt is not None:
+            streamed = await self._stt.take()
+            if streamed:
+                return streamed, self.plan.language, 1.0
+            logger.info("call %s no streamed transcript; using batch", self.call_id)
         try:
             return await sarvam.stt(
                 pcm_to_wav(pcm), "turn.wav", self.plan.language, timeout=15.0, retries=2,
@@ -294,6 +382,93 @@ class VoiceAgent:
         except SarvamUnavailable as e:
             logger.warning("call %s STT unavailable: %s", self.call_id, e)
             return "", "", 0.0
+
+    # ---------- meta-intents ----------
+
+    def _meta_lead(self, intents: list[Intent]) -> str:
+        """The one line that answers what the patient just asked.
+
+        One line, not one per intent: "who are you" and "why are you calling"
+        arrive together and have a single natural answer, and a nurse who
+        replies with a paragraph before re-asking has lost the patient again.
+        """
+        assert self.plan is not None
+        if Intent.WHO_ARE_YOU in intents and Intent.WHY_CALLING in intents:
+            return self.plan.phrase("meta_identity_purpose")
+        for intent, key in (
+            (Intent.WHO_ARE_YOU, "meta_identity"),
+            (Intent.WHY_CALLING, "meta_purpose"),
+            (Intent.LANGUAGE, "meta_language"),
+            (Intent.CONFUSED, "meta_confused"),
+            (Intent.REPEAT, "meta_repeat"),
+            (Intent.GREETING, "meta_greeting"),
+        ):
+            if intent in intents:
+                return self.plan.phrase(key)
+        return ""
+
+    async def _on_meta(self, intents: list[Intent], step: Step | None) -> None:
+        """Answer the patient's question, then ask ours again. Step unchanged."""
+        assert self.plan is not None
+        self.meta_replies += 1
+        logger.info(
+            "call %s meta-intent %s — holding step %s (reply %d)",
+            self.call_id, [i.value for i in intents],
+            step.key if step else "-", self.meta_replies,
+        )
+        lead = self._meta_lead(intents)
+        if step is None:
+            await self._close(lead=lead)
+            return
+        if self.meta_replies > MAX_META_REPLIES:
+            # Explaining is not working. Fall back to the reprompt ladder,
+            # which eventually moves on rather than looping here forever.
+            logger.info("call %s: too many clarifications, resuming script", self.call_id)
+            self.meta_replies = 0
+            await self._on_unclear()
+            return
+        await self._speak(step.spoken, step_key="clarify", lead=lead)
+
+    async def _on_terminal_intent(self, intent: Intent, transcript: str) -> None:
+        """Honour "wrong number" / "call me later" / "never call again" and stop."""
+        assert self.plan is not None
+        key = {
+            Intent.STOP: "meta_stop",
+            Intent.WRONG_PERSON: "meta_wrong_person",
+            Intent.BUSY: "meta_busy",
+        }[intent]
+        logger.info("call %s ending on meta-intent %s", self.call_id, intent.value)
+        try:
+            persist.note_interruption(self.db, self.call, intent.value, transcript)
+            self.db.commit()
+        except Exception:
+            logger.exception("call %s could not record %s", self.call_id, intent.value)
+            self.db.rollback()
+        # Nothing clinical is spoken here: a stranger who says "wrong number"
+        # must not learn the patient's medicines or condition.
+        await self._speak(self.plan.phrase(key), step_key=f"meta:{intent.value}")
+        await self.transport.playback_done.wait()
+        self.state = State.DONE
+
+    def _acknowledgement(self, step: Step | None, u: Understanding) -> str:
+        """A short human reaction to what was just said, chosen by the result.
+
+        Alternating between two variants is what stops four medicine questions
+        in a row from sounding like a form being read out.
+        """
+        assert self.plan is not None
+        self._ack_turn += 1
+        alt = self._ack_turn % 2 == 0
+        if u.symptoms or (u.pain_score or 0) > 0:
+            return self.plan.phrase("ack_symptom")
+        if step is not None and step.ref_type == "medicine":
+            if u.yes_no == "yes":
+                return self.plan.phrase("ack_med_yes_alt" if alt else "ack_med_yes")
+            if u.yes_no == "no":
+                return self.plan.phrase("ack_med_no_alt" if alt else "ack_med_no")
+        if step is not None and step.ref_type == "wellbeing" and u.urgency == "low":
+            return self.plan.phrase("ack_wellbeing_good")
+        return self.plan.phrase("ack_neutral")
 
     # ---------- exception paths ----------
 
@@ -336,9 +511,9 @@ class VoiceAgent:
         await self.transport.playback_done.wait()
         self.state = State.DONE
 
-    async def _close(self) -> None:
+    async def _close(self, *, lead: str = "") -> None:
         assert self.plan is not None
-        await self._speak(self.plan.phrase("closing"), step_key="closing")
+        await self._speak(self.plan.phrase("closing"), step_key="closing", lead=lead)
         await self.transport.playback_done.wait()
         self.state = State.DONE
 

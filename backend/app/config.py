@@ -18,14 +18,24 @@ class Settings(BaseSettings):
     plivo_from_number: str = ""  # a voice-enabled Plivo number, E.164
     public_base_url: str = "http://localhost:8000"
 
-    # Real-time voice (VAD endpointing + turn taking) — used by the WebSocket
-    # agent behind the browser voice console; phone calls are turn-based IVR.
-    voice_mode: str = "stream"  # "stream" = conversation | "classic" = <Play>+<Record>
+    # Real-time voice — Silero VAD endpointing + turn taking.
+    # "stream": bidirectional Plivo Audio Stream (phone) / browser WS — Silero VAD
+    # "classic": Plivo <Play>+<Record> with carrier silence timeout (no barge-in)
+    voice_mode: str = "stream"  # "stream" | "classic"
     vad_speech_threshold: float = 0.5  # Silero probability for a frame to count as speech
     vad_start_ms: int = 150  # sustained speech before the patient is "talking"
-    vad_silence_ms: int = 600  # trailing silence that ends a turn — the main feel knob
+    # Trailing silence that ends a turn. ~400–600ms is the sweet spot: lower
+    # and Hindi mid-phrase pauses cut off; higher and the call feels laggy.
+    vad_silence_ms: int = 500
     vad_max_utterance_ms: int = 15000  # hard stop so a monologue still gets processed
-    vad_barge_in_ms: int = 400  # speech over the nurse before we cut her off
+    # Speech over the nurse before we cut her off. Deliberately far longer than
+    # `vad_start_ms`: a ringtone tail, a carrier announcement or a cough will
+    # clear 350ms and truncate the greeting, and a patient who never hears the
+    # question spends the rest of the call asking what was said.
+    vad_barge_in_ms: int = 700
+    # Utterances quieter than this are line noise, not an answer. STT invents
+    # plausible sentences for near-silence, so it must not see them.
+    vad_min_utterance_rms: int = 250
     voice_no_speech_ms: int = 7000  # silence after a question before re-prompting
 
     # Storage
@@ -36,6 +46,15 @@ class Settings(BaseSettings):
     sched_tick_seconds: int = 60
     schedule_horizon_hours: int = 48
     time_scale_demo: bool = False  # ask_after_days interpreted as minutes for demos
+
+    # Transcribe over Sarvam's WebSocket while the patient is still speaking
+    # instead of uploading the finished utterance. Measured 570-1137 ms faster
+    # per turn; off by default until it has been proven on real calls.
+    stt_streaming: bool = False
+
+    # Spoken aloud when a patient asks who is calling. Left blank the nurse
+    # says "the hospital" — she must never name an organization we invented.
+    hospital_name: str = ""
 
     # Misc
     default_language: str = "hi-IN"

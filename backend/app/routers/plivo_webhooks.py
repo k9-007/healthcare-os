@@ -52,7 +52,11 @@ def _xml(content: str) -> Response:
 
 @router.api_route("/voice/{call_id}", methods=["GET", "POST"])
 async def voice(call_id: int, request: Request, db: Session = Depends(get_db)):
-    """XML served when the patient answers: greet, then ask the first question."""
+    """XML served when the patient answers.
+
+    VOICE_MODE=stream → bidirectional `<Stream>` into VoiceAgent + Silero VAD.
+    VOICE_MODE=classic → `<Play>` + `<Record>` turn loop (no barge-in).
+    """
     call = db.get(CallLog, call_id)
     if not call:
         logger.error("answer webhook for unknown call %s", call_id)
@@ -73,9 +77,24 @@ async def voice(call_id: int, request: Request, db: Session = Depends(get_db)):
     call.status = "ringing"
     db.commit()
 
+    settings = get_settings()
+    if settings.voice_mode == "stream":
+        # Dialogue is prepared while the phone rings; the agent picks it up the
+        # moment the WebSocket opens. Silero VAD owns turn-taking from there.
+        await _ensure_plan_ready(db, call)
+        ws_url = f"{settings.public_ws_base_url}/ws/voice/plivo/{call_id}"
+        status_url = f"{settings.public_base_url}/plivo/stream-status/{call_id}"
+        logger.info(
+            "call %s answered (CallUUID=%s): streaming VAD → %s",
+            call_id, call_uuid or "?", ws_url,
+        )
+        return _xml(telephony.plivo_response(
+            telephony.stream_element(ws_url, status_callback_url=status_url)
+        ))
+
     plan = await _plan_for(db, call)
     logger.info(
-        "call %s answered (CallUUID=%s): %d steps in %s",
+        "call %s answered (CallUUID=%s): %d steps in %s (classic Record)",
         call_id, call_uuid or "?", len(plan.steps), plan.language,
     )
 
@@ -91,6 +110,21 @@ async def voice(call_id: int, request: Request, db: Session = Depends(get_db)):
     # first question so the patient is only ever asked to speak once per turn.
     greeting = [plan.steps[0].spoken] if plan.steps and plan.steps[0].kind == "greeting" else []
     return _xml(await _ask(db, call, plan, _next_question(plan, -1), prefix_lines=greeting))
+
+
+@router.api_route("/stream-status/{call_id}", methods=["GET", "POST"])
+async def stream_status(call_id: int, request: Request):
+    """Plivo stream lifecycle callbacks (started / stopped / failed)."""
+    params = await _params(request)
+    logger.info(
+        "call %s stream status: Event=%s StreamID=%s Reason=%s Duration=%s",
+        call_id,
+        params.get("Event") or params.get("event") or "?",
+        params.get("StreamID") or params.get("streamId") or "?",
+        params.get("StatusReason") or "",
+        params.get("Duration") or "",
+    )
+    return {"ok": True}
 
 
 @router.api_route("/turn/{call_id}/{index}", methods=["GET", "POST"])
@@ -337,6 +371,24 @@ def _has_reply(db: Session, call: CallLog) -> bool:
 
 
 # ---------------- plan + audio plumbing ----------------
+
+
+async def _ensure_plan_ready(db: Session, call: CallLog) -> None:
+    """Join (or start) ring-time prep so VoiceAgent finds a prewarmed plan.
+
+    Must not call `_plan_for` here — that pops the stash into the classic-mode
+    cache and starves the streaming agent of its prepared audio.
+    """
+    prep = telephony.preparation_task(call.id)
+    if prep is not None:
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(asyncio.shield(prep), timeout=15.0)
+        return
+    from ..services.voice import agent as voice_agent
+    try:
+        await asyncio.wait_for(voice_agent.prepare_call(call.id), timeout=20.0)
+    except Exception:  # noqa: BLE001 — agent will build inline if needed
+        logger.exception("call %s: stream plan prep failed; agent will build inline", call.id)
 
 
 async def _plan_for(db: Session, call: CallLog) -> Plan:

@@ -12,11 +12,18 @@ frames (160 samples) are re-blocked internally.
 import logging
 import os
 from collections import deque
+from dataclasses import dataclass
 from enum import Enum
 
 import numpy as np
 
-from .audio import PCM_BYTES_PER_FRAME, SAMPLE_RATE, duration_ms
+from .audio import (
+    PCM_BYTES_PER_FRAME,
+    SAMPLE_RATE,
+    SAMPLES_PER_FRAME,
+    SILENCE_FRAME,
+    duration_ms,
+)
 
 logger = logging.getLogger("voice.vad")
 
@@ -46,14 +53,57 @@ def _get_session():
     return _session
 
 
-def warmup() -> None:
-    """Pay the model-load cost at boot instead of during the first call."""
-    Endpointer().push(b"\x00" * PCM_BYTES_PER_FRAME)
+def warmup() -> bool:
+    """Pay the model-load cost at boot instead of during the first call.
+
+    A 20 ms frame is 160 samples — short of the 256-sample window — so a single
+    push returns the carried-forward probability and never touches the session.
+    Feed enough frames to force a real inference, or the load lands on the first
+    live frame instead and stalls the event loop for ~0.9 s while the greeting
+    is playing.
+    """
+    endpointer = Endpointer()
+    for _ in range(-(-WINDOW_SAMPLES // SAMPLES_PER_FRAME)):
+        endpointer.push(SILENCE_FRAME)
+    if _session is None:
+        logger.error("Silero VAD warmup ran without building a session")
+        return False
+    return True
 
 
 class Event(Enum):
     SPEECH_START = "speech_start"
     UTTERANCE_END = "utterance_end"
+
+
+@dataclass
+class Stats:
+    """Per-utterance VAD confidence, for diagnosing what the line actually sent."""
+
+    frames: int = 0
+    speech_frames: int = 0
+    peak_prob: float = 0.0
+    _prob_sum: float = 0.0
+
+    @property
+    def mean_prob(self) -> float:
+        return self._prob_sum / self.frames if self.frames else 0.0
+
+    @property
+    def speech_ratio(self) -> float:
+        return self.speech_frames / self.frames if self.frames else 0.0
+
+    def observe(self, prob: float, is_speech: bool) -> None:
+        self.frames += 1
+        self.speech_frames += int(is_speech)
+        self.peak_prob = max(self.peak_prob, prob)
+        self._prob_sum += prob
+
+    def __str__(self) -> str:
+        return (
+            f"peak={self.peak_prob:.2f} mean={self.mean_prob:.2f} "
+            f"speech={self.speech_ratio:.0%}"
+        )
 
 
 class Endpointer:
@@ -72,7 +122,7 @@ class Endpointer:
         silence_ms: int = 600,
         max_utterance_ms: int = 15000,
         preroll_ms: int = 400,
-        gap_tolerance_ms: int = 80,
+        gap_tolerance_ms: int = 120,
     ) -> None:
         self.threshold = threshold
         # Hysteresis: it takes a confident frame to start counting speech, but
@@ -90,6 +140,7 @@ class Endpointer:
         self._context = np.zeros((1, CONTEXT_SAMPLES), dtype=np.float32)
         self._state = np.zeros((2, 1, 128), dtype=np.float32)
         self._sr = np.array(SAMPLE_RATE, dtype=np.int64)
+        self.last_stats = Stats()
         self.reset()
 
     def reset(self) -> None:
@@ -103,6 +154,7 @@ class Endpointer:
         self._last_prob = 0.0
         self._context[:] = 0.0
         self._state[:] = 0.0
+        self.stats = Stats()
 
     @property
     def utterance(self) -> bytes:
@@ -119,6 +171,7 @@ class Endpointer:
         # threshold applies — see `continue_threshold`.
         started = self.in_speech or self.speech_run_ms > 0
         is_speech = prob >= (self.continue_threshold if started else self.threshold)
+        self.stats.observe(prob, is_speech)
 
         if self.in_speech:
             self._utterance.extend(frame)
@@ -158,6 +211,7 @@ class Endpointer:
             drop = (self.silence_run_ms - 200) // 20 * PCM_BYTES_PER_FRAME
             if 0 < drop < len(pcm):
                 pcm = pcm[: len(pcm) - drop]
+        self.last_stats = self.stats
         self.reset()
         return pcm
 

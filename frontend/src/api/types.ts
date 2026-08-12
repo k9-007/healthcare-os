@@ -111,13 +111,39 @@ export interface ScheduledCall {
 export interface HospitalDoc {
   id: number
   title: string
-  type: 'guideline' | 'sop' | 'discharge' | 'lab' | 'formulary'
+  type: 'guideline' | 'sop' | 'discharge' | 'lab' | 'formulary' | 'prescription'
   pages: number
   sizeKb: number
   status: 'pending' | 'extracting' | 'ready' | 'failed'
   uploadedAt: string
   excerpt?: string
   patientId: number | null // null = general / hospital-wide
+}
+
+/** Structured output from POST /prescriptions/parse */
+export interface ParsedPrescriptionMedicine {
+  name: string
+  matchedName: string
+  genericName: string
+  brandName: string
+  dose: string
+  frequency: string
+  schedule: string[]
+  duration: string
+  instructions: string
+  confidence: number
+  matchScore: number
+  rawName: string
+  matched: boolean
+}
+
+export interface PrescriptionParseResult {
+  status: 'ok' | 'partial' | 'failed'
+  documentId: number | null
+  medicines: ParsedPrescriptionMedicine[]
+  unmatched: string[]
+  warnings: string[]
+  error: string
 }
 
 export interface Citation {

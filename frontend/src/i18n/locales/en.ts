@@ -127,6 +127,12 @@ const en = {
   carePlan: {
     medicines: 'Medicines',
     addMedicine: 'Add medicine',
+    scanRx: 'Scan prescription',
+    scanning: 'Reading…',
+    scanEmpty: 'No medicines detected — try a clearer photo.',
+    scanDone:
+      'Imported {{count}} medicine(s) from the prescription. Review names/doses before saving.{{extra}}',
+    scanFailed: 'Could not read prescription image.',
     colName: 'Name',
     colDose: 'Dose',
     colTimes: 'Times (csv)',
